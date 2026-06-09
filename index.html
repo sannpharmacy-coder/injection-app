@@ -186,7 +186,11 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
   background: var(--white); width: 100%; max-width: 600px;
   border-radius: 18px 18px 0 0; padding: 20px 18px;
   padding-bottom: calc(20px + env(safe-area-inset-bottom));
-  max-height: 90vh; overflow-y: auto;
+  max-height: 90vh; overflow-y: auto; overflow-x: hidden;
+}
+/* 数量ステッパー（受取本数・残本数の＋/−ボタン） */
+.stepper-btn {
+  min-width: 46px; font-size: 20px; font-weight: 700; padding: 8px 0; line-height: 1;
 }
 .modal-title { font-size: 17px; font-weight: 700; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
 .modal-title button { background: none; border: none; font-size: 26px; cursor: pointer; color: var(--gray-400); line-height: 1; }
@@ -541,7 +545,11 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       </div>
       <div class="form-group">
         <label>受取本数</label>
-        <input type="number" id="logBottles" min="0" step="1" placeholder="例：2" oninput="updateLogDepletionPreview()">
+        <div style="display:flex;align-items:center;gap:8px">
+          <button type="button" class="btn btn-outline btn-sm stepper-btn" onclick="stepLogBottles(-1)">−</button>
+          <input type="text" inputmode="numeric" id="logBottles" placeholder="例：2" style="flex:1;text-align:center" oninput="updateLogDepletionPreview()" onfocus="this.select()">
+          <button type="button" class="btn btn-outline btn-sm stepper-btn" onclick="stepLogBottles(1)">＋</button>
+        </div>
         <div id="logBottlesHint" style="font-size:12px;color:#1a6fbf;margin-top:3px"></div>
       </div>
       <!-- 枯渇予定日プレビュー（横並び） -->
@@ -554,7 +562,9 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       <div class="form-group">
         <label id="logStockLabel">確認後の残本数</label>
         <div style="display:flex;align-items:center;gap:8px">
-          <input type="number" id="logNewStock" min="0" step="1" placeholder="例：2" style="flex:1" oninput="onStockBottlesInput()">
+          <button type="button" class="btn btn-outline btn-sm stepper-btn" onclick="stepLogStock(-1)">−</button>
+          <input type="text" inputmode="numeric" id="logNewStock" placeholder="例：2" style="flex:1;text-align:center" oninput="onStockBottlesInput()" onfocus="this.select()">
+          <button type="button" class="btn btn-outline btn-sm stepper-btn" onclick="stepLogStock(1)">＋</button>
           <span id="logStockUnit" style="font-size:14px;color:#3d4d5c;white-space:nowrap">本</span>
         </div>
         <div id="logStockHint" style="font-size:12px;color:#9aa5b4;margin-top:4px"></div>
@@ -1518,10 +1528,11 @@ function openLogModal(prescriptionId, action, medicineName, capacity, curDailyAm
   document.getElementById('logDate').value = todayStr();
   document.getElementById('logMemo').value = '';
   document.getElementById('logBottles').value = '';
-  document.getElementById('logNewStock').value = '';
+  document.getElementById('logNewStock').value = '1';  // 初期値1（フォーカスで全選択され上書き入力可）
   // 残数確認用：1本容量をセット
   var cap = parseFloat(capacity) || 0;
   document.getElementById('logCapacity').value = cap;
+  onStockBottlesInput();  // 初期値の換算表示を更新
   var hint = document.getElementById('logStockHint');
   if (cap > 0) {
     hint.textContent = '1本 = ' + cap + '単位（半端な本は廃棄として切り捨て計算）';
@@ -1744,6 +1755,20 @@ function onStockBottlesInput() {
   } else {
     calc.textContent = '';
   }
+}
+
+// ＋/− ボタンによる増減（最小0でクランプ）。入力欄と同じ更新処理を呼ぶ。
+function stepLogBottles(delta) {
+  var el = document.getElementById('logBottles');
+  var v = parseInt(el.value, 10); if (isNaN(v)) v = 0;
+  el.value = Math.max(0, v + delta);
+  updateLogDepletionPreview();
+}
+function stepLogStock(delta) {
+  var el = document.getElementById('logNewStock');
+  var v = parseInt(el.value, 10); if (isNaN(v)) v = 0;
+  el.value = Math.max(0, v + delta);
+  onStockBottlesInput();
 }
 
 var _logSubmitting = false;
@@ -3055,6 +3080,11 @@ function visitPrintPDF() {
     + '.footer{margin-top:10px;font-size:8.5pt;color:#888;border-top:1px solid #ddd;padding-top:6px}'
     + '@media print{body{margin:6mm 8mm}button{display:none!important}}'
     + '</style></head><body>'
+    // アプリに戻るボタン（スマホで新規タブから戻れない問題対策。印刷時は非表示）
+    + '<div style="margin-bottom:10px">'
+    +   '<button onclick="window.close();setTimeout(function(){location.href=\'' + appUrl + '\'},250)" '
+    +     'style="padding:9px 20px;font-size:12pt;background:#fff;color:#1a6fbf;border:2px solid #1a6fbf;border-radius:6px;cursor:pointer">← アプリに戻る</button>'
+    + '</div>'
     // ヘッダー
     + '<div class="header-row">'
     +   '<div>'
