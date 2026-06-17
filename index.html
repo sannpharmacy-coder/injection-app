@@ -1704,8 +1704,8 @@ function calcLogBottlesSuggestion() {
   targetDate.setDate(targetDate.getDate() + 7);
   targetDate.setHours(0, 0, 0, 0);
 
-  var start = getLogActionDate();
-  var today = new Date(); today.setHours(0, 0, 0, 0);
+  // 枯渇予定は常に「今日」起点・現在庫ベースで算出（実施日に依存させず安定化）
+  var start = new Date(); start.setHours(0, 0, 0, 0);
   var daysNeeded = Math.max(0, Math.floor((targetDate - start) / 86400000));
 
   var intervalDays = freqToIntervalDays(frequency);
@@ -1718,9 +1718,7 @@ function calcLogBottlesSuggestion() {
     return;
   }
 
-  // 実施日が今日と異なる場合は起点在庫を実施日時点へ概算補正（サーバ addLog の理論在庫基準に合わせる）
-  var gapDays = Math.round((today - start) / 86400000);
-  var baseStock = Math.max(0, curStock + dailyUse * gapDays);
+  var baseStock = curStock;
 
   // 目標日まで在庫が持つ最小本数をシミュレーションで探索（開封期限による廃棄分も加味）
   var bottlesNeeded = 60;
@@ -1751,11 +1749,9 @@ function updateLogDepletionPreview() {
   var dailyUse = dailyAmount > 0 && intervalDays > 0 ? dailyAmount / intervalDays : 0;
   if (dailyUse <= 0) { depAfterEl.textContent = '-'; return; }
 
-  var start = getLogActionDate();
-  var today = new Date(); today.setHours(0, 0, 0, 0);
-  // 実施日が今日と異なる場合は起点在庫を実施日時点へ概算補正
-  var gapDays = Math.round((today - start) / 86400000);
-  var baseStock = Math.max(0, curStock + dailyUse * gapDays);
+  // 枯渇予定は常に「今日」起点・現在庫ベースで算出（実施日に依存させず安定化）
+  var start = new Date(); start.setHours(0, 0, 0, 0);
+  var baseStock = curStock;
 
   // 「現在の枯渇予定」も処方後と同一モデルで再計算する。
   //   保存済み値だと算出時期・旧ロジックの違いで0本でも食い違って見えるため、
