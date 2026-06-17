@@ -1756,8 +1756,17 @@ function updateLogDepletionPreview() {
   // 実施日が今日と異なる場合は起点在庫を実施日時点へ概算補正
   var gapDays = Math.round((today - start) / 86400000);
   var baseStock = Math.max(0, curStock + dailyUse * gapDays);
-  var totalStock = baseStock + bottles * cap;
 
+  // 「現在の枯渇予定」も処方後と同一モデルで再計算する。
+  //   保存済み値だと算出時期・旧ロジックの違いで0本でも食い違って見えるため、
+  //   受取0本＝在庫不変なら現在＝処方後で一致するようその場計算に揃える。
+  var depBeforeEl = document.getElementById('logDepBefore');
+  if (depBeforeEl) {
+    var depBefore = simulateDepletionDate(baseStock, dailyAmount, intervalDays, cap, expireDays, start);
+    depBeforeEl.textContent = depBefore ? formatDateShort(depBefore) : '3年以上';
+  }
+
+  var totalStock = baseStock + bottles * cap;
   var dep = simulateDepletionDate(totalStock, dailyAmount, intervalDays, cap, expireDays, start);
   depAfterEl.textContent = dep ? formatDateShort(dep) : '3年以上';
 }
