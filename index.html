@@ -1537,6 +1537,15 @@ function freqToIntervalDays(frequency) {
   return 1;
 }
 
+// "YYYY/MM/DD" / "YYYY-MM-DD" を0時のDateに（不正はnull）
+function parseDateLoose(s) {
+  if (!s) return null;
+  var d = new Date(String(s).replace(/\//g, '-'));
+  if (isNaN(d)) return null;
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
 // stock単位の在庫を「開封後expireDays日で残量廃棄→次ボトル開封」運用で消費し、尽きる日を返す。
 // expireDays>=999（または未設定/容量0）は期限なし＝消費のみ。start=起点日。返り値Date（3年超でnull）。
 function simulateDepletionDate(stock, amountPerDose, intervalDays, capacity, expireDays, start) {
@@ -1704,10 +1713,6 @@ function calcLogBottlesSuggestion() {
   targetDate.setDate(targetDate.getDate() + 7);
   targetDate.setHours(0, 0, 0, 0);
 
-  // 枯渇予定は常に「今日」起点・現在庫ベースで算出（実施日に依存させず安定化）
-  var start = new Date(); start.setHours(0, 0, 0, 0);
-  var daysNeeded = Math.max(0, Math.floor((targetDate - start) / 86400000));
-
   var intervalDays = freqToIntervalDays(frequency);
   var dailyUse = dailyAmount > 0 && intervalDays > 0 ? dailyAmount / intervalDays : 0;
 
@@ -1718,17 +1723,23 @@ function calcLogBottlesSuggestion() {
     return;
   }
 
-  var baseStock = curStock;
+  // 目標日まで持たせる最小本数（処方後の式と整合: max(D,受取日)+N×1本日数 ≥ 目標日）
+  var D = parseDateLoose(_logRxData.currentDepletionDate);
+  var receiptDate = getLogActionDate();
+  var perBottle = cap / dailyUse;
+  var durationPerBottle = (expireDays >= 999) ? perBottle : Math.min(expireDays, perBottle);
+  var base = (D && D.getTime() > receiptDate.getTime()) ? D : receiptDate;
 
-  // 目標日まで在庫が持つ最小本数をシミュレーションで探索（開封期限による廃棄分も加味）
-  var bottlesNeeded = 60;
-  for (var b = 0; b <= 60; b++) {
-    var dep = simulateDepletionDate(baseStock + b * cap, dailyAmount, intervalDays, cap, expireDays, start);
-    if (dep === null || dep >= targetDate) { bottlesNeeded = b; break; }
+  var bottlesNeeded;
+  if (D && D.getTime() >= targetDate.getTime()) {
+    bottlesNeeded = 0; // 現在の在庫だけで目標日まで足りる
+  } else {
+    var deficitDays = (targetDate.getTime() - base.getTime()) / 86400000;
+    bottlesNeeded = Math.max(0, Math.ceil(deficitDays / durationPerBottle));
   }
 
   document.getElementById('logBottles').value = bottlesNeeded;
-  if (hint) hint.textContent = '※ 目標日(' + formatDateShort(targetDate) + ')まで ' + daysNeeded + '日分 / 在庫' + baseStock.toFixed(1) + '単位 → ' + bottlesNeeded + '本を自動計算';
+  if (hint) hint.textContent = '※ 目標日(' + formatDateShort(targetDate) + ')まで → ' + bottlesNeeded + '本（1本≒' + Math.round(durationPerBottle) + '日）';
   updateLogDepletionPreview();
 }
 
@@ -1742,29 +1753,32 @@ function updateLogDepletionPreview() {
   var curStock    = _logRxData.currentStock;
   var expireDays  = _logRxData.expireDays;
 
-  var depAfterEl = document.getElementById('logDepAfter');
+  var depAfterEl  = document.getElementById('logDepAfter');
+  var depBeforeEl = document.getElementById('logDepBefore');
   if (!depAfterEl) return;
+
+  // 現在の枯渇予定(D) = 受取時に計算して保存した値をそのまま表示（再計算しない）
+  var D = parseDateLoose(_logRxData.currentDepletionDate);
+  if (depBeforeEl) depBeforeEl.textContent = D ? formatDateShort(D) : (_logRxData.currentDepletionDate || '-');
 
   var intervalDays = freqToIntervalDays(frequency);
   var dailyUse = dailyAmount > 0 && intervalDays > 0 ? dailyAmount / intervalDays : 0;
-  if (dailyUse <= 0) { depAfterEl.textContent = '-'; return; }
+  if (dailyUse <= 0 || cap <= 0) { depAfterEl.textContent = D ? formatDateShort(D) : '-'; return; }
 
-  // 枯渇予定は常に「今日」起点・現在庫ベースで算出（実施日に依存させず安定化）
-  var start = new Date(); start.setHours(0, 0, 0, 0);
-  var baseStock = curStock;
-
-  // 「現在の枯渇予定」も処方後と同一モデルで再計算する。
-  //   保存済み値だと算出時期・旧ロジックの違いで0本でも食い違って見えるため、
-  //   受取0本＝在庫不変なら現在＝処方後で一致するようその場計算に揃える。
-  var depBeforeEl = document.getElementById('logDepBefore');
-  if (depBeforeEl) {
-    var depBefore = simulateDepletionDate(baseStock, dailyAmount, intervalDays, cap, expireDays, start);
-    depBeforeEl.textContent = depBefore ? formatDateShort(depBefore) : '3年以上';
+  // 処方後の枯渇予定:
+  //   0本 → D（不変）
+  //   N本 → max(D, 受取日) + N×(1本が持つ日数)
+  //          1本が持つ日数 = min(開封後有効日数, 容量÷1日使用量)（期限なしは容量÷使用量）
+  if (bottles <= 0) {
+    depAfterEl.textContent = D ? formatDateShort(D) : '-';
+    return;
   }
-
-  var totalStock = baseStock + bottles * cap;
-  var dep = simulateDepletionDate(totalStock, dailyAmount, intervalDays, cap, expireDays, start);
-  depAfterEl.textContent = dep ? formatDateShort(dep) : '3年以上';
+  var perBottle = cap / dailyUse;
+  var durationPerBottle = (expireDays >= 999) ? perBottle : Math.min(expireDays, perBottle);
+  var receiptDate = getLogActionDate();
+  var base = (D && D.getTime() > receiptDate.getTime()) ? D : receiptDate;
+  var after = new Date(base.getTime() + Math.round(bottles * durationPerBottle) * 86400000);
+  depAfterEl.textContent = formatDateShort(after);
 }
 
 function formatDateShort(d) {
