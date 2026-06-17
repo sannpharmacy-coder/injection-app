@@ -318,32 +318,22 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
   <div id="page-settings" class="page">
     <div class="page-header">
       <h1>設定</h1>
-      <p>GAS Web App URLの設定</p>
+      <p>アプリの動作設定</p>
     </div>
+
+    <!-- 往診の必要本数 設定 -->
     <div class="card" style="margin-top:16px">
-      <div class="settings-icon">
-        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41M17.66 6.34l1.41-1.41"/></svg>
-      </div>
-      <h3 style="text-align:center;margin-bottom:6px">GAS Web App URL</h3>
-      <p style="text-align:center;font-size:13px;color:var(--gray-400);margin-bottom:16px">Google Apps ScriptのデプロイURLを入力してください</p>
+      <div style="font-size:15px;font-weight:700;margin-bottom:12px">🚑 往診の必要本数</div>
+      <p style="font-size:13px;color:var(--gray-400);margin-bottom:14px;line-height:1.7">
+        次回往診予定日に確保しておきたい在庫日数です。<br>
+        1本あたりの実効日数（=min(容量÷1日使用量, 開封後有効日数)）が この日数以上の薬は「次回往診日に1本残す」、未満の薬は「次回往診日からこの日数ぶん持たせる」よう必要本数を計算します。
+      </p>
       <div class="form-group">
-        <label>Web App URL</label>
-        <input type="url" id="settingsGasUrl" placeholder="https://script.google.com/macros/s/..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false">
+        <label>確保する在庫日数（日）</label>
+        <input type="number" id="settingsVisitBufferDays" min="1" max="120" value="14" style="max-width:120px">
       </div>
-      <button class="btn btn-primary btn-full" onclick="saveGasUrl()">保存して接続する</button>
-    </div>
-    <div class="card" style="margin-top:12px">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px;color:var(--gray-400)">現在のURL</div>
-      <div class="url-display" id="currentUrlDisplay">未設定</div>
-      <button class="btn btn-outline btn-full btn-sm" style="margin-top:10px" onclick="clearGasUrl()">URLをリセット</button>
-    </div>
-    <div class="card" style="margin-top:12px;background:#fff8e1">
-      <div style="font-size:13px;font-weight:700;margin-bottom:8px">📋 URLの確認方法</div>
-      <div style="font-size:13px;line-height:1.7;color:var(--gray-700)">
-        <span class="step-badge">1</span>GASエディタ → 「デプロイ」→「デプロイを管理」<br>
-        <span class="step-badge">2</span>「ウェブアプリ」のURLをコピー<br>
-        <span class="step-badge">3</span>上の入力欄に貼り付けて保存
-      </div>
+      <button class="btn btn-primary btn-sm" onclick="saveVisitSettings()">保存</button>
+      <span id="visitSettingsSaved" style="font-size:13px;color:var(--success);margin-left:10px;display:none">✓ 保存しました</span>
     </div>
 
     <!-- 在庫アラート閾値設定 -->
@@ -905,6 +895,35 @@ function initAlertThresholdInputs() {
 }
 
 // ============================================================
+// 往診の必要本数 設定（全端末共通・Script Properties / GAS API経由）
+// ============================================================
+async function loadVisitSettings() {
+  var inp = document.getElementById('settingsVisitBufferDays');
+  if (!inp) return;
+  try {
+    var s = await api('getSettings');
+    if (s && s.visitBufferDays) inp.value = s.visitBufferDays;
+  } catch (e) { /* 取得失敗時は既定値のまま */ }
+}
+
+async function saveVisitSettings() {
+  var inp = document.getElementById('settingsVisitBufferDays');
+  if (!inp) return;
+  var n = parseInt(inp.value, 10);
+  if (isNaN(n) || n <= 0) { toast('在庫日数は1以上で入力してください'); return; }
+  try {
+    var res = await api('setSettings', null, { visitBufferDays: n });
+    if (res && res.error) { toast('保存失敗: ' + res.error); return; }
+    if (res && res.visitBufferDays) inp.value = res.visitBufferDays;
+    var msg = document.getElementById('visitSettingsSaved');
+    if (msg) { msg.style.display = 'inline'; setTimeout(function(){ msg.style.display = 'none'; }, 2000); }
+    toast('往診の在庫日数を保存しました ✓');
+  } catch (e) {
+    toast('保存失敗: ' + e.message);
+  }
+}
+
+// ============================================================
 // 在庫アラート
 // ============================================================
 var _alertCache = null;
@@ -1146,7 +1165,7 @@ function showPage(page) {
   if (page === 'search')   { loadAllPatients(); loadAlerts(); }
   if (page === 'visit')    { loadHospitals(); setDefaultDates(); }
   if (page === 'bulk')     { loadHospitals().then(function() { initBulkPage(); }); }
-  if (page === 'settings') { updateUrlDisplay(); initAlertThresholdInputs(); }
+  if (page === 'settings') { initAlertThresholdInputs(); loadVisitSettings(); }
   if (page === 'master')   { loadMasterList(currentMasterTab); }
 }
 
@@ -2759,7 +2778,7 @@ function renderVisitResults(result) {
     + '<div style="font-size:13px;color:#1a6fbf">'
     + '往診日: <b>' + result.visitDate + '</b>　'
     + '次回: <b>' + result.nextVisitDate + '</b>　'
-    + '目標日: <b>' + result.targetDate + '</b>（次回+7日）'
+    + '目標日: <b>' + result.targetDate + '</b>（次回往診日に安全在庫を確保）'
     + '</div>'
     + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'
     + '<button class="btn btn-outline btn-sm" onclick="visitPrintPDF()" style="flex:1;min-width:120px">🖨 PDF印刷</button>'
@@ -3183,7 +3202,7 @@ function visitPrintPDF() {
     +     '<div class="meta">'
     +       '往診日: <b>' + r.visitDate + '</b>　'
     +       '次回往診: <b>' + r.nextVisitDate + '</b>　'
-    +       '目標日: <b>' + r.targetDate + '</b>（次回+7日）'
+    +       '目標日: <b>' + r.targetDate + '</b>（次回往診日に安全在庫を確保）'
     +     '</div>'
     +   '</div>'
     +   '<div class="qr-box">'
