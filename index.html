@@ -1428,8 +1428,9 @@ function renderRxCard(p, stopped) {
   // 枯渇予定日: 最終ログの値（開封期限加味済み）
   var depDate = p.depletionDate || p.effectiveDepletionDate || '-';
 
-  // 1日使用回数
-  var dailyCountInfo = (p.dailyCount && p.dailyCount > 0)
+  // 1日使用回数（吸入薬は不要なので表示しない）
+  var isInhaler = (p.medicineType === '吸入薬');
+  var dailyCountInfo = (!isInhaler && p.dailyCount && p.dailyCount > 0)
     ? '<div class="rx-row"><span class="rx-label">1日使用回数</span><span>' + p.dailyCount + ' 回/日</span></div>'
     : '';
 
@@ -1466,13 +1467,13 @@ function renderRxCard(p, stopped) {
   var curDepDate    = escapeJs(String(p.effectiveDepletionDate || ''));
   var actions = stopped
     ? '<div class="rx-actions">'
-      + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\')">📋 履歴</button>'
+      + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\',\'' + escapeJs(p.medicineType || '') + '\')">📋 履歴</button>'
       + '</div>'
     : '<div class="rx-actions">'
       + '<button class="btn btn-primary btn-sm" onclick="openLogModal(\'' + pid + '\',\'処方受取\',\'' + mname + '\',\'' + cap + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curFreq + '\',\'' + curStock + '\',\'' + curDepDate + '\',\'' + escapeJs(String(p.expireDays || '9999')) + '\')">受取</button>'
       + '<button class="btn btn-outline btn-sm" onclick="openLogModal(\'' + pid + '\',\'残数確認\',\'' + mname + '\',\'' + cap + '\')">残数</button>'
       + '<button class="btn btn-outline btn-sm" onclick="openLogModal(\'' + pid + '\',\'用量変更\',\'' + mname + '\',\'' + cap + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curFreq + '\')">変更</button>'
-      + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\')">履歴</button>'
+      + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\',\'' + escapeJs(p.medicineType || '') + '\')">履歴</button>'
       + '</div>';
 
   // データ整合性チェック除外トグル
@@ -1976,9 +1977,11 @@ async function submitLog() {
 // 履歴モーダル
 // ============================================================
 var currentHistoryPrescriptionId = null;
+var currentHistoryIsInhaler = false; // 履歴表示中の薬が吸入薬か（1日回数の表示制御）
 
-async function showHistory(prescriptionId) {
+async function showHistory(prescriptionId, medicineType) {
   currentHistoryPrescriptionId = prescriptionId;
+  currentHistoryIsInhaler = (medicineType === '吸入薬');
   openModal('historyModal');
   document.getElementById('historyContent').innerHTML = '<div class="loading"><div class="spinner"></div>読み込み中...</div>';
   try {
@@ -1990,6 +1993,7 @@ async function showHistory(prescriptionId) {
 }
 
 function renderHistory(logs) {
+  var historyIsInhaler = currentHistoryIsInhaler; // 吸入薬は1日回数を表示しない
   if (!logs || !logs.length) {
     document.getElementById('historyContent').innerHTML = '<div class="empty-state">記録がありません</div>';
     return;
@@ -2021,10 +2025,10 @@ function renderHistory(logs) {
       + (l.bottles ? '<div style="font-size:13px">受取本数: <b>' + l.bottles + '</b> 本</div>' : '')
       + beforeStr
       + afterStr
-      + (l.dailyAmount ? '<div style="font-size:13px">1回使用量: <b>' + l.dailyAmount + '</b> 単位/回</div>' : '')
-      + (l.dailyCount ? '<div style="font-size:13px">1日回数: <b>' + l.dailyCount + '</b> 回/日</div>' : '')
+      + (l.dailyAmount ? '<div style="font-size:13px">1日使用量: <b>' + l.dailyAmount + '</b> 単位/日</div>' : '')
+      + ((l.dailyCount && !historyIsInhaler) ? '<div style="font-size:13px">1日回数: <b>' + l.dailyCount + '</b> 回/日</div>' : '')
       + (l.frequency ? '<div style="font-size:13px">使用頻度: <b>' + l.frequency + '</b></div>' : '')
-      + (l.newDailyAmount ? '<div style="font-size:13px;color:#e65100">→ 変更後使用量: <b>' + l.newDailyAmount + '</b> 単位/回</div>' : '')
+      + (l.newDailyAmount ? '<div style="font-size:13px;color:#e65100">→ 変更後使用量: <b>' + l.newDailyAmount + '</b> 単位/日</div>' : '')
       + (l.nextVisitDate && l.nextVisitDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">次回処方予定: ' + l.nextVisitDate + '</div>' : '')
       + (l.needleCount ? '<div style="font-size:13px;color:#9aa5b4">針: ' + l.needleCount + ' 本</div>' : '')
       + (l.depletionDate && l.depletionDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">枯渇予定: ' + l.depletionDate + '</div>' : '')
