@@ -2135,17 +2135,20 @@ async function submitEditLog() {
     _alertCache = null; // 在庫変更のためアラートを再取得
     toast('✓ 記録を変更しました');
     closeModal('editLogModal');
-    // 履歴を再読み込みして再表示
-    if (currentHistoryPrescriptionId) {
-      var logs = await api('getLogs', { prescriptionId: currentHistoryPrescriptionId });
-      renderHistory(logs);
-      openModal('historyModal');
-    }
-    // 患者詳細も更新
-    if (currentPatient) {
-      var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
-      renderPatientDetail(currentPatient, prescriptions);
-    }
+    // 履歴・患者詳細を並列で再取得（互いに依存しないため）
+    await Promise.all([
+      currentHistoryPrescriptionId
+        ? api('getLogs', { prescriptionId: currentHistoryPrescriptionId }).then(function(logs) {
+            renderHistory(logs);
+            openModal('historyModal');
+          })
+        : Promise.resolve(),
+      currentPatient
+        ? api('getPrescriptions', { patientId: currentPatient.patientId }).then(function(prescriptions) {
+            renderPatientDetail(currentPatient, prescriptions);
+          })
+        : Promise.resolve(),
+    ]);
     // 一括残数ページが開いていれば在庫を再読み込み
     refreshBulkStockIfOpen();
   } catch(e) {
@@ -2158,15 +2161,19 @@ async function deleteLog(logId) {
   try {
     await api('deleteLog', null, { logId: logId });
     toast('✓ 記録を削除しました');
-    // 履歴を再読み込み
-    if (currentHistoryPrescriptionId) {
-      var logs = await api('getLogs', { prescriptionId: currentHistoryPrescriptionId });
-      renderHistory(logs);
-    }
-    if (currentPatient) {
-      var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
-      renderPatientDetail(currentPatient, prescriptions);
-    }
+    // 履歴・患者詳細を並列で再取得（互いに依存しないため）
+    await Promise.all([
+      currentHistoryPrescriptionId
+        ? api('getLogs', { prescriptionId: currentHistoryPrescriptionId }).then(function(logs) {
+            renderHistory(logs);
+          })
+        : Promise.resolve(),
+      currentPatient
+        ? api('getPrescriptions', { patientId: currentPatient.patientId }).then(function(prescriptions) {
+            renderPatientDetail(currentPatient, prescriptions);
+          })
+        : Promise.resolve(),
+    ]);
     // 一括残数ページが開いていれば在庫を再読み込み
     refreshBulkStockIfOpen();
   } catch(e) {
@@ -3481,6 +3488,13 @@ function switchMasterTab(type) {
 }
 
 async function loadMasterList(type) {
+  // キャッシュがあれば再取得せずそのまま表示（タブ往復での無駄な往復を避ける）。
+  // 書込後（saveMaster/deleteMasterRow）は呼び出し側でキャッシュを削除してから呼ぶため、
+  // その場合はここでミスして最新データを取りに行く。
+  if (masterCache[type]) {
+    renderMasterList(type, masterCache[type], '');
+    return;
+  }
   var el = document.getElementById('masterList');
   el.innerHTML = '<div class="loading"><div class="spinner"></div>読み込み中...</div>';
   try {
@@ -3800,6 +3814,7 @@ async function saveMaster() {
       toast('✓ 追加しました');
     }
     closeModal('masterModal');
+    delete masterCache[currentMasterTab]; // 書込後は必ず最新を取り直す
     loadMasterList(currentMasterTab);
   } catch(e) {
     toast('エラー: ' + e.message);
@@ -3815,6 +3830,7 @@ async function deleteMasterRow() {
     await api('deleteMaster', null, { type: currentMasterTab, id: id });
     toast('✓ 削除しました');
     closeModal('masterModal');
+    delete masterCache[currentMasterTab]; // 書込後は必ず最新を取り直す
     loadMasterList(currentMasterTab);
   } catch(e) {
     toast('エラー: ' + e.message);
