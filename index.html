@@ -1966,14 +1966,22 @@ async function submitLog() {
         // 写真失敗でもログ記録は続行
       }
     }
-    await api('addLog', null, body);
+    // returnPrescriptions:true で、登録後の処方一覧をこの応答に同梱してもらい、
+    // 別途getPrescriptionsを呼ぶ往復を省く
+    body.returnPrescriptions = true;
+    var addRes = await api('addLog', null, body);
     _alertCache = null; // 在庫変更のためアラートを再取得
     toast('✓ ' + action + 'を記録しました');
     closeModal('logModal');
     if (currentPatient) {
-      loading('patientContent');
-      var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
-      renderPatientDetail(currentPatient, prescriptions);
+      if (addRes && addRes.prescriptions) {
+        renderPatientDetail(currentPatient, addRes.prescriptions);
+      } else {
+        // 同梱データが無い場合（旧バックエンド等）は従来どおり別途取得
+        loading('patientContent');
+        var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
+        renderPatientDetail(currentPatient, prescriptions);
+      }
     }
   } catch(e) {
     toast('エラー: ' + e.message);
