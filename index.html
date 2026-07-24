@@ -3019,20 +3019,20 @@ async function visitBulkRegister() {
   }
 
   try {
-    var results = await Promise.allSettled(tasks.map(function(t) {
-      return api('addLog', null, {
-        prescriptionId: t.prescriptionId,
-        action: '処方受取',
-        date: t.date,
-        bottles: t.bottles,
-        memo: '往診一括登録'
-      });
-    }));
-    var ok = results.filter(function(r) { return r.status === 'fulfilled'; }).length;
-    var ng = results.length - ok;
+    // 1回のまとめ送信（サーバー側1実行・1ロックで全件処理）。
+    // 以前は addLog をN件並列送信していたが、LockServiceで直列化され遅かった。
+    var result = await api('addBulkReceipts', null, {
+      receipts: tasks.map(function(t) {
+        return { prescriptionId: t.prescriptionId, bottles: t.bottles, date: t.date };
+      }),
+      memo: '往診一括登録'
+    });
+    var resArr = (result && result.results) ? result.results : [];
+    var ok = resArr.filter(function(r) { return r.success; }).length;
+    var ng = ((result && result.total) || resArr.length) - ok;
     toast('✓ ' + ok + '件登録完了' + (ng > 0 ? '　失敗: ' + ng + '件' : ''));
   } catch(e) {
-    toast('エラー: ' + e.message);
+    toast('エラー: ' + escHtml(e.message));
   }
   btn.disabled = false; btn.textContent = '📋 一括登録';
 }
