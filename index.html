@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>注射薬在庫管理</title>
 <style>
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -41,7 +41,9 @@ html, body { height: 100%; background: var(--gray-100); font-family: 'Hiragino S
 .page-header {
   position: sticky; top: 0; z-index: 50;
   background: var(--primary); color: var(--white);
-  padding: 14px 16px 12px;
+  /* 全画面表示(ホーム画面アイコン)ではステータスバー分だけ上に余白を足し、
+     見出しがステータスバーに潜らないようにする（env未対応環境では0＝従来の14px）。 */
+  padding: calc(env(safe-area-inset-top, 0px) + 14px) 16px 12px;
   box-shadow: 0 2px 6px rgba(0,0,0,.15);
 }
 .page-header h1 { font-size: 18px; font-weight: 700; }
