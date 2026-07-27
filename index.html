@@ -9,6 +9,7 @@
 :root {
   --primary:   #1a6fbf;
   --primary-d: #155299;
+  --progress:  #4fc3f7;
   --success:   #2e7d32;
   --warning:   #e65100;
   --danger:    #c62828;
@@ -222,12 +223,70 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 .visit-bottles  { font-size: 26px; font-weight: 800; color: var(--primary); min-width: 50px; text-align: right; }
 .visit-bottles span { font-size: 13px; font-weight: 500; color: var(--gray-400); }
 #toast {
-  position: fixed; top: 20px; left: 50%; transform: translateX(-50%);
+  position: fixed; top: calc(env(safe-area-inset-top, 0px) + 40px); left: 50%; transform: translateX(-50%);
   background: var(--gray-700); color: var(--white); padding: 10px 20px;
   border-radius: 24px; font-size: 14px; z-index: 999; opacity: 0;
   transition: opacity .3s; pointer-events: none; white-space: nowrap;
 }
 #toast.show { opacity: 1; }
+
+/* ============================================================
+   書き込み進捗バー（画面最上部・indeterminate）
+   ・書き込み系（登録/編集/削除/一括登録）でのみ表示
+   ・パーセントは出さない（サーバーの実進行度が取れないため）
+   ============================================================ */
+#progressBar {
+  /* iOSのステータスバー/ノッチの下端に合わせる（env未対応環境では0＝従来どおり最上部） */
+  position: fixed; top: env(safe-area-inset-top, 0px); left: 0; right: 0; height: 3px;
+  z-index: 1000;                 /* toast(999) / setupOverlay(300) / modal(200) より上 */
+  overflow: hidden; pointer-events: none;
+  background: rgba(26,111,191,.18);
+  opacity: 0; transition: opacity .18s ease, background-color .18s ease;
+}
+#progressBar.show { opacity: 1; }
+#progressBar .pg-fill {
+  position: absolute; top: 0; left: 0; height: 100%; width: 100%;
+  background: var(--progress);
+  transform-origin: 0 50%;
+  animation: pgFlow 1.15s ease-in-out infinite;
+}
+/* 完了時: 一気に満ちてから消える（背景ごと塗るのでブラウザ差が出ない） */
+#progressBar.done { background: var(--progress); }
+#progressBar.done .pg-fill { display: none; }
+@keyframes pgFlow {
+  0%   { transform: translateX(-100%) scaleX(.55); }
+  55%  { transform: translateX(35%)   scaleX(.85); }
+  100% { transform: translateX(100%)  scaleX(.55); }
+}
+
+/* 作業名ラベル（バー直下・右寄せ）。
+   左はページタイトルと戻るボタン、中央はtoastが使うため、空いている右上に置く。 */
+#progressLabel {
+  position: fixed; top: calc(env(safe-area-inset-top, 0px) + 9px); right: 12px; z-index: 1000;
+  max-width: calc(100vw - 24px);
+  background: var(--gray-700); color: var(--white);
+  padding: 4px 12px; border-radius: 20px;
+  font-size: 12px; font-weight: 600; line-height: 1.4;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  box-shadow: var(--shadow);
+  opacity: 0; transition: opacity .18s ease; pointer-events: none;
+}
+#progressLabel.show { opacity: 1; }
+
+/* OSの「視差効果を減らす」設定を尊重。
+   ただし静止させると「満ちた状態(.done)」と見分けがつかず処理中が伝わらないため、
+   横移動をやめる代わりに濃度をゆっくり明滅させる。 */
+@media (prefers-reduced-motion: reduce) {
+  #progressBar .pg-fill {
+    transform: none;
+    animation: pgPulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pgPulse {
+    0%, 100% { opacity: .35; }
+    50%      { opacity: 1; }
+  }
+}
+
 .tabs { display: flex; margin: 12px 12px 0; gap: 8px; }
 .tab-btn {
   flex: 1; padding: 8px; border-radius: 8px; border: 2px solid var(--gray-200);
@@ -408,7 +467,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
         <label>備考（任意・全患者共通）</label>
         <input type="text" id="bulkMemoInput" placeholder="例：〇〇施設訪問時確認">
       </div>
-      <button class="btn btn-success btn-full" style="font-size:16px;padding:14px" onclick="submitBulkStock()">✓ 残数を一括確定</button>
+      <button class="btn btn-success btn-full" style="font-size:16px;padding:14px" id="bulkStockSubmitBtn" onclick="submitBulkStock()">✓ 残数を一括確定</button>
     </div>
   </div>
 
@@ -780,6 +839,8 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
   </div>
 </div>
 
+<div id="progressBar" aria-hidden="true"><div class="pg-fill"></div></div>
+<div id="progressLabel" role="status" aria-live="polite"></div>
 <div id="toast"></div>
 
 <script>
@@ -1222,6 +1283,161 @@ function toast(msg, duration) {
   setTimeout(function() { el.classList.remove('show'); }, duration);
 }
 
+// ============================================================
+// 書き込み進捗バー（画面最上部・indeterminate）
+// ------------------------------------------------------------
+// 設計の要点:
+//  1) api() には手を入れない。1回の「操作」は複数のapi()にまたがる
+//     （例: submitLog = uploadPhoto → addLog）ため、呼び出し側で
+//     progressStart / progressEnd を対で囲む。api()の間でバーが
+//     一瞬消えてチカつくのを構造的に防ぐ。
+//  2) 参照カウンタ(depth)で入れ子・並行実行に対応。
+//  3) トークンに世代(gen)を持たせ、強制解除後に遅れて戻ってきた
+//     古い操作が、今動いている別操作の表示を壊さないようにする。
+//  4) 万一 finally が漏れても PG_SAFETY_MS で強制解除する。
+// ============================================================
+var PG_SHOW_DELAY  = 200;    // これ以内に終わる通信ではバーを出さない
+var PG_MIN_VISIBLE = 300;    // 一度出したら最低これだけ見せる
+var PG_DONE_FLASH  = 160;    // 完了時に「満ちた」状態を見せる時間
+// 保険: これを超えたら無条件で解除。一括登録はGAS側のLockServiceで直列化され
+// 数十件で1分を超えうるため、余裕を持たせる（短いと処理中にバーが消え、
+// 失敗したと誤解した再クリック＝重複登録を招く）。
+var PG_SAFETY_MS   = 180000;
+
+var _pg = {
+  gen:         0,     // 世代。強制解除のたびに進み、古いトークンを無効化する
+  depth:       0,     // 実行中の書き込み操作数（参照カウンタ）
+  showTimer:   null,  // 遅延表示タイマー
+  hideTimer:   null,  // 最小表示／完了演出タイマー
+  safetyTimer: null,  // 強制解除タイマー
+  shownAt:     0,     // 実際に表示した時刻（0 = 未表示）
+  label:       '',    // 現在の作業名
+  failed:      false  // この操作でエラーが起きたか
+};
+
+function _pgBar()   { return document.getElementById('progressBar'); }
+function _pgLabel() { return document.getElementById('progressLabel'); }
+
+function _pgShow() {
+  var bar = _pgBar(), lab = _pgLabel();
+  if (bar) { bar.classList.remove('done'); bar.classList.add('show'); }
+  if (lab) { lab.textContent = _pg.label; lab.classList.add('show'); }
+  if (!_pg.shownAt) _pg.shownAt = Date.now();
+}
+
+function _pgHide() {
+  var bar = _pgBar(), lab = _pgLabel();
+  if (bar) { bar.classList.remove('show'); bar.classList.remove('done'); }
+  // textContentも消す。opacity:0では読み上げツリーから外れず、
+  // 処理終了後も古い作業名が読み上げられてしまうため。
+  if (lab) { lab.classList.remove('show'); lab.textContent = ''; }
+  _pg.shownAt = 0;
+  _pg.label   = '';
+  _pg.failed  = false;
+}
+
+// 全状態を初期化し、世代を進めて実行中の古いトークンを無効化する。
+// 保険発動時とデバッグ用（コンソールから _pgReset() で復旧できる）。
+function _pgReset() {
+  clearTimeout(_pg.showTimer);   _pg.showTimer   = null;
+  clearTimeout(_pg.hideTimer);   _pg.hideTimer   = null;
+  clearTimeout(_pg.safetyTimer); _pg.safetyTimer = null;
+  _pg.gen++;
+  _pg.depth = 0;
+  _pgHide();
+}
+
+// 書き込み操作の開始。返り値のトークンは必ず finally で progressEnd に渡すこと。
+function progressStart(label) {
+  var token = { closed: false, gen: _pg.gen };
+  _pg.depth++;
+  _pg.label = label || '処理しています…';
+  if (_pg.depth === 1) _pg.failed = false;
+
+  // 「消える途中」に次の操作が来たら消さずに継続する（連続操作のチラつき防止）
+  if (_pg.hideTimer) { clearTimeout(_pg.hideTimer); _pg.hideTimer = null; }
+
+  if (_pg.shownAt) {
+    _pgShow();                       // 既に出ている → ラベル差し替え＋doneを解除
+  } else if (!_pg.showTimer) {
+    // まだ出ていない → PG_SHOW_DELAY 後に出す（速い通信では一度も出さない）
+    _pg.showTimer = setTimeout(function() {
+      _pg.showTimer = null;
+      if (_pg.depth > 0) _pgShow();
+    }, PG_SHOW_DELAY);
+  }
+
+  // 保険: finally が漏れてもバーが残り続けないようにする
+  clearTimeout(_pg.safetyTimer);
+  _pg.safetyTimer = setTimeout(function() {
+    console.warn('[progress] safety timeout: 進捗バーを強制解除しました');
+    _pgReset();
+  }, PG_SAFETY_MS);
+
+  return token;
+}
+
+// 同一操作内で作業名だけ切り替える（バーは消さない）。
+// 強制解除後に生き残った古い操作が、今動いている別操作のラベルを
+// 乗っ取らないよう、start/fail/end と同じく世代を突き合わせる。
+function progressStep(token, label) {
+  if (token && token.gen !== _pg.gen) return;
+  if (_pg.depth <= 0 || !label) return;
+  _pg.label = label;
+  var lab = _pgLabel();
+  if (_pg.shownAt && lab) lab.textContent = label;
+}
+
+// エラー扱いにマークする（完了時の「満ちる」演出をスキップする）
+function progressFail(token) {
+  if (token && token.gen !== _pg.gen) return;   // 強制解除済みの古い操作は無視
+  _pg.failed = true;
+}
+
+// 操作の終了。必ず finally から呼ぶ。二重呼び出し・世代違いともに安全。
+function progressEnd(token) {
+  if (token) {
+    if (token.closed) return;              // 二重endでカウンタが壊れないようにする
+    if (token.gen !== _pg.gen) {           // 強制解除後に遅れて戻ってきた古い操作。
+      token.closed = true;                 // 現在動いている別操作のdepthを触らせない
+      return;
+    }
+    token.closed = true;
+  }
+  _pg.depth = Math.max(0, _pg.depth - 1);
+  if (_pg.depth > 0) return;               // 他の操作がまだ走っている → 出したまま
+
+  clearTimeout(_pg.safetyTimer); _pg.safetyTimer = null;
+
+  if (!_pg.shownAt) {
+    // PG_SHOW_DELAY 以内に終わった → 一度も出していないので静かに終了
+    clearTimeout(_pg.showTimer); _pg.showTimer = null;
+    _pg.label  = '';
+    _pg.failed = false;
+    return;
+  }
+
+  // 出した後は最低 PG_MIN_VISIBLE だけ見せてから閉じる
+  var wait   = Math.max(0, PG_MIN_VISIBLE - (Date.now() - _pg.shownAt));
+  var failed = _pg.failed;
+  _pg.hideTimer = setTimeout(function() {
+    _pg.hideTimer = null;
+    if (_pg.depth > 0) return;     // 待つ間に次の操作が始まっていたら閉じない
+    if (failed) {
+      _pgHide();                   // エラー時は演出なしで即消し（toastに引き継ぐ）
+      return;
+    }
+    var bar = _pgBar(), lab = _pgLabel();
+    if (bar) bar.classList.add('done');       // 一気に満ちる
+    if (lab) lab.classList.remove('show');
+    _pg.hideTimer = setTimeout(function() {
+      _pg.hideTimer = null;
+      if (_pg.depth > 0) return;
+      _pgHide();
+    }, PG_DONE_FLASH);
+  }, wait);
+}
+
 function loading(id) {
   document.getElementById(id).innerHTML = '<div class="loading"><div class="spinner"></div>読み込み中...</div>';
 }
@@ -1527,6 +1743,7 @@ function renderRxCard(p, stopped) {
 // データ整合性チェック除外フラグのトグル
 // ============================================================
 async function toggleSkipIntegrityCheck(prescriptionId, checked) {
+  var pg = progressStart('設定を保存しています…');
   try {
     await api('updatePrescription', null, {
       prescriptionId: prescriptionId,
@@ -1535,10 +1752,13 @@ async function toggleSkipIntegrityCheck(prescriptionId, checked) {
     _alertCache = null; // アラートを再取得
     toast(checked ? '✓ チェックを除外設定しました' : '✓ チェックを再有効化しました');
   } catch(e) {
+    progressFail(pg);
     toast('⚠️ 保存失敗: ' + e.message);
     // チェックボックスを元に戻す
     var cb = document.getElementById('skip-' + prescriptionId);
     if (cb) cb.checked = !checked;
+  } finally {
+    progressEnd(pg);
   }
 }
 
@@ -1950,6 +2170,7 @@ async function submitLog() {
   var submitBtn = document.getElementById('logSubmitBtn');
   if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '記録中...'; }
 
+  var pg = progressStart(logPhotoBase64 ? '写真を保存しています…' : '記録しています…');
   try {
     // 写真がある場合はまずアップロードしてURLを取得
     if (logPhotoBase64) {
@@ -1965,6 +2186,7 @@ async function submitLog() {
         console.warn('写真アップロード失敗:', photoErr);
         // 写真失敗でもログ記録は続行
       }
+      progressStep(pg, '記録しています…');
     }
     // returnPrescriptions:true で、登録後の処方一覧をこの応答に同梱してもらい、
     // 別途getPrescriptionsを呼ぶ往復を省く
@@ -1978,14 +2200,17 @@ async function submitLog() {
         renderPatientDetail(currentPatient, addRes.prescriptions);
       } else {
         // 同梱データが無い場合（旧バックエンド等）は従来どおり別途取得
+        progressStep(pg, '最新の処方を取得しています…');
         loading('patientContent');
         var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
         renderPatientDetail(currentPatient, prescriptions);
       }
     }
   } catch(e) {
+    progressFail(pg);
     toast('エラー: ' + e.message);
   } finally {
+    progressEnd(pg);
     _logSubmitting = false;
     if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '記録する'; }
   }
@@ -2138,12 +2363,14 @@ async function submitEditLog() {
   if (dc && !isNaN(dc)) body.newDailyCount = parseInt(dc);
   var nv = document.getElementById('editLogNextVisit').value;
   if (nv) body.nextVisitDate = nv;
+  var pg = progressStart('変更を保存しています…');
   try {
     await api('updateLog', null, body);
     _alertCache = null; // 在庫変更のためアラートを再取得
     toast('✓ 記録を変更しました');
     closeModal('editLogModal');
     // 履歴・患者詳細を並列で再取得（互いに依存しないため）
+    progressStep(pg, '最新データを取得しています…');
     await Promise.all([
       currentHistoryPrescriptionId
         ? api('getLogs', { prescriptionId: currentHistoryPrescriptionId }).then(function(logs) {
@@ -2160,16 +2387,21 @@ async function submitEditLog() {
     // 一括残数ページが開いていれば在庫を再読み込み
     refreshBulkStockIfOpen();
   } catch(e) {
+    progressFail(pg);
     toast('エラー: ' + e.message);
+  } finally {
+    progressEnd(pg);
   }
 }
 
 async function deleteLog(logId) {
   if (!confirm('この記録を削除しますか？\n※この操作は元に戻せません')) return;
+  var pg = progressStart('記録を削除しています…');
   try {
     await api('deleteLog', null, { logId: logId });
     toast('✓ 記録を削除しました');
     // 履歴・患者詳細を並列で再取得（互いに依存しないため）
+    progressStep(pg, '最新データを取得しています…');
     await Promise.all([
       currentHistoryPrescriptionId
         ? api('getLogs', { prescriptionId: currentHistoryPrescriptionId }).then(function(logs) {
@@ -2185,7 +2417,10 @@ async function deleteLog(logId) {
     // 一括残数ページが開いていれば在庫を再読み込み
     refreshBulkStockIfOpen();
   } catch(e) {
+    progressFail(pg);
     toast('エラー: ' + e.message);
+  } finally {
+    progressEnd(pg);
   }
 }
 
@@ -2267,6 +2502,7 @@ async function submitAddPrescription() {
   var memo        = document.getElementById('addRxMemo').value;
   if (!medicineId) { toast('薬品を選択してください'); return; }
   if (!amount || isNaN(amount)) { toast('1回使用量を入力してください'); return; }
+  var pg = progressStart('処方を追加しています…');
   try {
     await api('addPrescription', null, {
       patientId:   currentPatient.patientId,
@@ -2281,10 +2517,14 @@ async function submitAddPrescription() {
     });
     toast('✓ 処方を追加しました');
     closeModal('addRxModal');
+    progressStep(pg, '最新の処方を取得しています…');
     var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
     renderPatientDetail(currentPatient, prescriptions);
   } catch(e) {
+    progressFail(pg);
     toast('エラー: ' + e.message);
+  } finally {
+    progressEnd(pg);
   }
 }
 
@@ -2670,21 +2910,28 @@ async function submitBulkStock() {
   // 確認
   if (!confirm(logs.length + '件の残数確認を登録します。よろしいですか？')) return;
 
-  // 写真アップロード
-  var photoUrl = '';
-  if (bulkPhotoBase64) {
-    try {
-      toast('写真をアップロード中...');
-      var photoRes = await api('uploadPhoto', null, {
-        base64: bulkPhotoBase64,
-        fileName: 'bulk_' + date + '_' + Date.now() + '.jpg'
-      });
-      if (photoRes && photoRes.url) photoUrl = photoRes.url;
-    } catch(e) { console.warn('写真アップロード失敗:', e); }
-  }
+  // 二重送信ガード: 応答が遅いときの再クリックで同じ残数確認が重複登録されるのを防ぐ
+  var bulkBtn = document.getElementById('bulkStockSubmitBtn');
+  if (bulkBtn) { bulkBtn.disabled = true; bulkBtn.textContent = '登録中...'; }
 
-  // 一括登録
+  // 写真アップロードと一括登録を1つのtryで囲む（間で例外が出ても進捗バーが必ず閉じるように）
+  var pg = progressStart(logs.length + '件を登録しています…');
   try {
+    // 写真アップロード
+    var photoUrl = '';
+    if (bulkPhotoBase64) {
+      try {
+        progressStep(pg, '写真を保存しています…');
+        var photoRes = await api('uploadPhoto', null, {
+          base64: bulkPhotoBase64,
+          fileName: 'bulk_' + date + '_' + Date.now() + '.jpg'
+        });
+        if (photoRes && photoRes.url) photoUrl = photoRes.url;
+      } catch(e) { console.warn('写真アップロード失敗:', e); }
+      progressStep(pg, logs.length + '件を登録しています…');
+    }
+
+    // 一括登録
     var result = await api('addBulkLogs', null, { logs: logs, photoUrl: photoUrl });
     _alertCache = null; // 在庫変更のためアラートを再取得
     var ok = result.results ? result.results.filter(function(r){ return r.success; }).length : 0;
@@ -2697,7 +2944,11 @@ async function submitBulkStock() {
     clearBulkPhoto({ stopPropagation: function(){} });
     window._bulkPatients = null;
   } catch(e) {
+    progressFail(pg);
     toast('エラー: ' + e.message);
+  } finally {
+    progressEnd(pg);
+    if (bulkBtn) { bulkBtn.disabled = false; bulkBtn.textContent = '✓ 残数を一括確定'; }
   }
 }
 
@@ -3033,6 +3284,7 @@ async function visitBulkRegister() {
     return;
   }
 
+  var pg = progressStart(tasks.length + '件を登録しています…');
   try {
     // 1回のまとめ送信（サーバー側1実行・1ロックで全件処理）。
     // 以前は addLog をN件並列送信していたが、LockServiceで直列化され遅かった。
@@ -3047,9 +3299,12 @@ async function visitBulkRegister() {
     var ng = ((result && result.total) || resArr.length) - ok;
     toast('✓ ' + ok + '件登録完了' + (ng > 0 ? '　失敗: ' + ng + '件' : ''));
   } catch(e) {
+    progressFail(pg);
     toast('エラー: ' + escHtml(e.message));
+  } finally {
+    progressEnd(pg);
+    btn.disabled = false; btn.textContent = '📋 一括登録';
   }
-  btn.disabled = false; btn.textContent = '📋 一括登録';
 }
 
 // ============================================================
@@ -3811,6 +4066,7 @@ async function saveMaster() {
   });
   if (!valid) return;
 
+  var pg = progressStart(currentMasterRecord ? '更新しています…' : '追加しています…');
   try {
     if (currentMasterRecord) {
       // 更新
@@ -3825,7 +4081,10 @@ async function saveMaster() {
     delete masterCache[currentMasterTab]; // 書込後は必ず最新を取り直す
     loadMasterList(currentMasterTab);
   } catch(e) {
+    progressFail(pg);
     toast('エラー: ' + e.message);
+  } finally {
+    progressEnd(pg);
   }
 }
 
@@ -3834,6 +4093,7 @@ async function deleteMasterRow() {
   var idKey = getMasterIdKey(currentMasterTab);
   var id    = currentMasterRecord[idKey];
   if (!confirm('「' + MASTER_DEF[currentMasterTab].rowLabel(currentMasterRecord, masterCache) + '」を削除しますか？\n※この操作は元に戻せません')) return;
+  var pg = progressStart('削除しています…');
   try {
     await api('deleteMaster', null, { type: currentMasterTab, id: id });
     toast('✓ 削除しました');
@@ -3841,7 +4101,10 @@ async function deleteMasterRow() {
     delete masterCache[currentMasterTab]; // 書込後は必ず最新を取り直す
     loadMasterList(currentMasterTab);
   } catch(e) {
+    progressFail(pg);
     toast('エラー: ' + e.message);
+  } finally {
+    progressEnd(pg);
   }
 }
 
