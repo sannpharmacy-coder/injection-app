@@ -2136,6 +2136,13 @@ function stepLogStock(delta) {
 }
 
 var _logSubmitting = false;
+// 二重送信ガード（通信中の連打で同じ登録が重複するのを防ぐ。進捗バーとは別で、
+// _pg.depthは操作を区別しないため兼用しない）。各関数の入口で判定し、finallyで戻す。
+var _editLogSubmitting = false;
+var _deletingLog = false;
+var _addRxSubmitting = false;
+var _masterSaving = false;
+var _masterDeleting = false;
 async function submitLog() {
   // 二重送信ガード: 連打・二度押しで同じログが重複記録されるのを防ぐ
   if (_logSubmitting) return;
@@ -2344,6 +2351,7 @@ function onEditStockBottlesInput() {
 }
 
 async function submitEditLog() {
+  if (_editLogSubmitting) return;
   var logId = document.getElementById('editLogId').value;
   var date  = document.getElementById('editLogDate').value;
   var memo  = document.getElementById('editLogMemo').value;
@@ -2365,6 +2373,7 @@ async function submitEditLog() {
   if (dc && !isNaN(dc)) body.newDailyCount = parseInt(dc);
   var nv = document.getElementById('editLogNextVisit').value;
   if (nv) body.nextVisitDate = nv;
+  _editLogSubmitting = true;
   var pg = progressStart('変更を保存しています…');
   try {
     await api('updateLog', null, body);
@@ -2393,11 +2402,14 @@ async function submitEditLog() {
     toast('エラー: ' + e.message);
   } finally {
     progressEnd(pg);
+    _editLogSubmitting = false;
   }
 }
 
 async function deleteLog(logId) {
+  if (_deletingLog) return;
   if (!confirm('この記録を削除しますか？\n※この操作は元に戻せません')) return;
+  _deletingLog = true;
   var pg = progressStart('記録を削除しています…');
   try {
     await api('deleteLog', null, { logId: logId });
@@ -2423,6 +2435,7 @@ async function deleteLog(logId) {
     toast('エラー: ' + e.message);
   } finally {
     progressEnd(pg);
+    _deletingLog = false;
   }
 }
 
@@ -2494,6 +2507,7 @@ function onAddRxMedicineChange(medicineId) {
 }
 
 async function submitAddPrescription() {
+  if (_addRxSubmitting) return;
   if (!currentPatient) return;
   var medicineId  = getSearchSelectValue('addRxMedicine');
   var freq        = document.getElementById('addRxFreq').value;
@@ -2504,6 +2518,7 @@ async function submitAddPrescription() {
   var memo        = document.getElementById('addRxMemo').value;
   if (!medicineId) { toast('薬品を選択してください'); return; }
   if (!amount || isNaN(amount)) { toast('1回使用量を入力してください'); return; }
+  _addRxSubmitting = true;
   var pg = progressStart('処方を追加しています…');
   try {
     await api('addPrescription', null, {
@@ -2527,6 +2542,7 @@ async function submitAddPrescription() {
     toast('エラー: ' + e.message);
   } finally {
     progressEnd(pg);
+    _addRxSubmitting = false;
   }
 }
 
@@ -4034,6 +4050,7 @@ async function loadMasterForSelect(type) {
 }
 
 async function saveMaster() {
+  if (_masterSaving) return;
   // 患者マスタを変更した場合は全患者キャッシュをクリア
   if (currentMasterTab === 'patient') _allPatients = [];
   var def    = MASTER_DEF[currentMasterTab];
@@ -4068,6 +4085,7 @@ async function saveMaster() {
   });
   if (!valid) return;
 
+  _masterSaving = true;
   var pg = progressStart(currentMasterRecord ? '更新しています…' : '追加しています…');
   try {
     if (currentMasterRecord) {
@@ -4087,14 +4105,17 @@ async function saveMaster() {
     toast('エラー: ' + e.message);
   } finally {
     progressEnd(pg);
+    _masterSaving = false;
   }
 }
 
 async function deleteMasterRow() {
+  if (_masterDeleting) return;
   if (!currentMasterRecord) return;
   var idKey = getMasterIdKey(currentMasterTab);
   var id    = currentMasterRecord[idKey];
   if (!confirm('「' + MASTER_DEF[currentMasterTab].rowLabel(currentMasterRecord, masterCache) + '」を削除しますか？\n※この操作は元に戻せません')) return;
+  _masterDeleting = true;
   var pg = progressStart('削除しています…');
   try {
     await api('deleteMaster', null, { type: currentMasterTab, id: id });
@@ -4107,6 +4128,7 @@ async function deleteMasterRow() {
     toast('エラー: ' + e.message);
   } finally {
     progressEnd(pg);
+    _masterDeleting = false;
   }
 }
 
