@@ -232,6 +232,15 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 }
 #toast.show { opacity: 1; }
 
+/* 起動時キャッシュ即時表示中の「更新中」バッジ（改善3: SWR先行表示） */
+#staleBadge {
+  position: fixed; top: calc(env(safe-area-inset-top, 0px) + 9px); left: 12px; z-index: 999;
+  background: var(--gray-700); color: var(--white); padding: 4px 12px; border-radius: 20px;
+  font-size: 12px; font-weight: 600; opacity: 0; transition: opacity .18s ease; pointer-events: none;
+  white-space: nowrap;
+}
+#staleBadge.show { opacity: .85; }
+
 /* ============================================================
    書き込み進捗バー（画面最上部・indeterminate）
    ・書き込み系（登録/編集/削除/一括登録）でのみ表示
@@ -411,6 +420,21 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       </div>
       <button class="btn btn-primary btn-sm" onclick="saveAlertThresholds()">保存</button>
       <span id="alertThresholdSaved" style="font-size:13px;color:var(--success);margin-left:10px;display:none">✓ 保存しました</span>
+    </div>
+
+    <!-- 通信ログ（動作が遅い/エラーが出た時の診断用） -->
+    <div class="card" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px">
+        <div style="font-size:15px;font-weight:700">📶 通信ログ</div>
+        <div style="display:flex;gap:6px">
+          <button class="btn btn-outline btn-sm" onclick="renderCommLog()">更新</button>
+          <button class="btn btn-outline btn-sm" onclick="clearCommLog();renderCommLog()">クリア</button>
+        </div>
+      </div>
+      <p style="font-size:13px;color:var(--gray-400);margin-bottom:10px;line-height:1.6">
+        直近30件の通信を記録しています。「動作が遅い」「エラーが出た」時はこの画面のスクショで原因を確認できます。
+      </p>
+      <div id="commLogList" style="font-size:12px;font-family:monospace;line-height:1.8;max-height:320px;overflow-y:auto"></div>
     </div>
   </div>
 
@@ -843,6 +867,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 
 <div id="progressBar" aria-hidden="true"><div class="pg-fill"></div></div>
 <div id="progressLabel" role="status" aria-live="polite"></div>
+<div id="staleBadge"></div>
 <div id="toast"></div>
 
 <script>
@@ -1153,7 +1178,84 @@ function escHtml(str) {
 // ============================================================
 // API呼び出し
 // ============================================================
+// GAS側のWRITE_ACTIONSと同じ集合（コード.js:handleRequest）。
+// 書き込み系は二重登録防止のため自動リトライしない（既存の二重送信ガードと整合）。
+const WRITE_ACTIONS_FRONT = {
+  addLog: 1, addBulkLogs: 1, addBulkReceipts: 1, addVisitPlan: 1, updateLog: 1, deleteLog: 1,
+  updatePrescription: 1, addPrescription: 1, uploadPhoto: 1,
+  addMaster: 1, updateMaster: 1, deleteMaster: 1, setSettings: 1,
+};
+
+// 改善4: 通信ログ（次回「体感が遅い」が起きた時に設定画面のスクショ1枚で
+// 診断できるようにする。直近COMM_LOG_MAX件をリングバッファでlocalStorageに保存）。
+const COMM_LOG_KEY = 'commLog_v1';
+const COMM_LOG_MAX = 30;
+
+function _commLogAppend(entry) {
+  try {
+    var raw = localStorage.getItem(COMM_LOG_KEY);
+    var list = raw ? JSON.parse(raw) : [];
+    list.push(entry);
+    if (list.length > COMM_LOG_MAX) list = list.slice(list.length - COMM_LOG_MAX);
+    localStorage.setItem(COMM_LOG_KEY, JSON.stringify(list));
+  } catch (e) { /* 記録失敗は無視（本体機能に影響させない） */ }
+}
+
+function getCommLog() {
+  try {
+    var raw = localStorage.getItem(COMM_LOG_KEY);
+    return raw ? JSON.parse(raw) : [];
+  } catch (e) { return []; }
+}
+
+function clearCommLog() {
+  try { localStorage.removeItem(COMM_LOG_KEY); } catch (e) {}
+}
+
+function renderCommLog() {
+  var el = document.getElementById('commLogList');
+  if (!el) return;
+  var list = getCommLog().slice().reverse(); // 新しい順
+  if (!list.length) {
+    el.innerHTML = '<div style="color:var(--gray-400)">まだ記録がありません</div>';
+    return;
+  }
+  el.innerHTML = list.map(function(entry) {
+    var d = new Date(entry.ts);
+    var hm = String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0') + ':' + String(d.getSeconds()).padStart(2, '0');
+    var color = entry.ok ? (entry.ms > 6000 ? '#e65100' : 'var(--gray-700)') : '#c62828';
+    var mark = entry.ok ? (entry.retried ? '⟳' : '✓') : '✗';
+    var line = hm + ' ' + mark + ' ' + escHtml(entry.action) + ' — ' + entry.ms + 'ms';
+    if (!entry.ok && entry.error) line += '<br><span style="margin-left:62px;color:#c62828">' + escHtml(entry.error) + '</span>';
+    return '<div style="color:' + color + '">' + line + '</div>';
+  }).join('');
+}
+
 async function api(action, params, body) {
+  var t0 = Date.now();
+  var isWrite = !!WRITE_ACTIONS_FRONT[action];
+  try {
+    var data = await _apiRequest(action, params, body);
+    _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true });
+    return data;
+  } catch (e) {
+    // 読み取り系のみ1回だけ自動リトライする（冪等なので安全）。
+    if (!isWrite) {
+      try {
+        var data2 = await _apiRequest(action, params, body);
+        _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true, retried: true });
+        return data2;
+      } catch (e2) {
+        _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: false, error: e2.message, retried: true });
+        throw e2;
+      }
+    }
+    _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: false, error: e.message });
+    throw e;
+  }
+}
+
+async function _apiRequest(action, params, body) {
   GAS_URL = getGasUrl();
   if (!GAS_URL) {
     document.getElementById('setupOverlay').classList.add('open');
@@ -1230,7 +1332,7 @@ function showPage(page) {
   if (page === 'search')   { loadAllPatients(); loadAlerts(); }
   if (page === 'visit')    { loadHospitals(); setDefaultDates(); }
   if (page === 'bulk')     { loadHospitals().then(function() { initBulkPage(); }); }
-  if (page === 'settings') { initAlertThresholdInputs(); loadVisitSettings(); }
+  if (page === 'settings') { initAlertThresholdInputs(); loadVisitSettings(); renderCommLog(); }
   if (page === 'master')   { loadMasterList(currentMasterTab); }
 }
 
@@ -1242,9 +1344,9 @@ window.addEventListener('DOMContentLoaded', function() {
   } else {
     updateUrlDisplay();
     initAlertThresholdInputs();
-    // 初期ページが検索ページなら全患者とアラートを読み込む
-    loadAllPatients();
-    loadAlerts();
+    // 初期ページが検索ページなら全患者・アラート・設定・病院一覧をまとめて読み込む
+    // (改善2: getInit 1リクエスト化。旧個別取得はinitApp内でフォールバックとして使用)
+    initApp();
     // QRコードアクセス: ?hospital=...&visitDate=...&nextVisitDate=...
     var params = new URLSearchParams(location.search);
     var qrHospital   = params.get('hospital');
@@ -1485,6 +1587,90 @@ async function loadAllPatients() {
     renderPatientListGrouped(_allPatients);
   } catch(e) {
     document.getElementById('searchResults').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+// ============================================================
+// 起動時まとめ取得（改善2: getInit 1リクエスト化 ／ 改善3: キャッシュ先行表示）
+// ------------------------------------------------------------
+// 患者一覧・病院一覧・往診設定は「多少古くても実害がない」一覧データなので
+// localStorageにキャッシュし、起動時はまずキャッシュで即描画→裏で最新を取得して
+// 差し替える(stale-while-revalidate)。在庫数値・枯渇日・アラートは医療データの
+// 正確性が重要なため、この即時表示の対象外＝常に最新を取りに行く
+// （getInitのレスポンス到着後にのみ描画する）。
+// ============================================================
+var INIT_CACHE_KEY = 'initCache_v1';
+
+function _loadInitCache() {
+  try {
+    var raw = localStorage.getItem(INIT_CACHE_KEY);
+    if (!raw) return null;
+    var obj = JSON.parse(raw);
+    if (!obj || !obj.patients) return null;
+    return obj;
+  } catch (e) { return null; }
+}
+
+function _saveInitCache(data) {
+  try {
+    data.savedAt = Date.now();
+    localStorage.setItem(INIT_CACHE_KEY, JSON.stringify(data));
+  } catch (e) { /* 容量超過等は無視（キャッシュは無くても動作に支障ない） */ }
+}
+
+function _showStaleBadge(savedAt) {
+  var el = document.getElementById('staleBadge');
+  if (!el) return;
+  var d = savedAt ? new Date(savedAt) : null;
+  var hm = d ? (String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')) : '';
+  el.textContent = (hm ? '最終更新 ' + hm + '・' : '') + '更新中…';
+  el.classList.add('show');
+}
+function _hideStaleBadge() {
+  var el = document.getElementById('staleBadge');
+  if (el) el.classList.remove('show');
+}
+
+async function initApp() {
+  // 1) キャッシュがあれば即座に一覧を表示（在庫数値・アラートはキャッシュ対象外）
+  var cached = _loadInitCache();
+  if (cached) {
+    _allPatients = cached.patients || [];
+    renderPatientListGrouped(_allPatients);
+    if (cached.hospitals) hospitals = cached.hospitals;
+    if (cached.settings && cached.settings.visitBufferDays) _visitBufferDays = cached.settings.visitBufferDays;
+    _showStaleBadge(cached.savedAt);
+  } else {
+    loading('searchResults');
+  }
+  // 2) 裏で最新を1リクエストにまとめて取得し、届いたら差し替える
+  try {
+    var t = getAlertThresholds();
+    var init = await api('getInit', { dangerDays: t.dangerDays, warningDays: t.warningDays });
+    _allPatients = init.patients || [];
+    renderPatientListGrouped(_allPatients);
+    _alertCache = init.alerts;
+    renderAlertBanner(init.alerts);
+    if (init.settings && init.settings.visitBufferDays) {
+      _visitBufferDays = init.settings.visitBufferDays;
+      var inp = document.getElementById('settingsVisitBufferDays');
+      if (inp) inp.value = init.settings.visitBufferDays;
+    }
+    if (init.hospitals) hospitals = init.hospitals; // DOM配線自体はloadHospitals()が後で行う
+    _saveInitCache({ patients: init.patients, hospitals: init.hospitals, settings: init.settings });
+    _hideStaleBadge();
+  } catch(e) {
+    // getInit未対応の旧バックエンド、またはネットワーク不調 → 従来どおり個別取得にフォールバック
+    console.warn('getInit失敗、個別取得にフォールバック:', e.message);
+    _hideStaleBadge();
+    try {
+      var patients2 = await api('getAllPatients');
+      _allPatients = patients2 || [];
+      renderPatientListGrouped(_allPatients);
+    } catch(e2) {
+      document.getElementById('searchResults').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e2.message) + '</div>';
+    }
+    loadAlerts();
   }
 }
 
@@ -2373,28 +2559,46 @@ async function submitEditLog() {
   if (dc && !isNaN(dc)) body.newDailyCount = parseInt(dc);
   var nv = document.getElementById('editLogNextVisit').value;
   if (nv) body.nextVisitDate = nv;
+  // returnLogs/returnPrescriptions:true で、変更後の履歴・処方一覧をこの応答に
+  // 同梱してもらい、別途getLogs/getPrescriptionsを呼ぶ往復を省く。
+  if (currentHistoryPrescriptionId) body.returnLogs = true;
+  if (currentPatient) { body.returnPrescriptions = true; body.patientId = currentPatient.patientId; }
   _editLogSubmitting = true;
   var pg = progressStart('変更を保存しています…');
   try {
-    await api('updateLog', null, body);
+    var updRes = await api('updateLog', null, body);
     _alertCache = null; // 在庫変更のためアラートを再取得
     toast('✓ 記録を変更しました');
     closeModal('editLogModal');
-    // 履歴・患者詳細を並列で再取得（互いに依存しないため）
-    progressStep(pg, '最新データを取得しています…');
-    await Promise.all([
-      currentHistoryPrescriptionId
-        ? api('getLogs', { prescriptionId: currentHistoryPrescriptionId }).then(function(logs) {
-            renderHistory(logs);
-            openModal('historyModal');
-          })
-        : Promise.resolve(),
-      currentPatient
-        ? api('getPrescriptions', { patientId: currentPatient.patientId }).then(function(prescriptions) {
-            renderPatientDetail(currentPatient, prescriptions);
-          })
-        : Promise.resolve(),
-    ]);
+    // 同梱データはlogs/prescriptionsそれぞれ個別にtry-catchされているため
+    // （片方だけ埋め込みに失敗しうる）、フォールバックもフィールド単位で判定する。
+    // どちらかだけ「同梱成功」でOR判定すると、もう片方がサイレントに古いまま
+    // 残ってしまう（更新失敗が画面に一切出ない）ため、必ず個別に見る。
+    var needLogsFetch = !!currentHistoryPrescriptionId && !(updRes && updRes.logs);
+    var needPresFetch = !!currentPatient && !(updRes && updRes.prescriptions);
+    if (updRes && updRes.logs && currentHistoryPrescriptionId) {
+      renderHistory(updRes.logs);
+      openModal('historyModal');
+    }
+    if (updRes && updRes.prescriptions && currentPatient) {
+      renderPatientDetail(currentPatient, updRes.prescriptions);
+    }
+    if (needLogsFetch || needPresFetch) {
+      progressStep(pg, '最新データを取得しています…');
+      await Promise.all([
+        needLogsFetch
+          ? api('getLogs', { prescriptionId: currentHistoryPrescriptionId }).then(function(logs) {
+              renderHistory(logs);
+              openModal('historyModal');
+            })
+          : Promise.resolve(),
+        needPresFetch
+          ? api('getPrescriptions', { patientId: currentPatient.patientId }).then(function(prescriptions) {
+              renderPatientDetail(currentPatient, prescriptions);
+            })
+          : Promise.resolve(),
+      ]);
+    }
     // 一括残数ページが開いていれば在庫を再読み込み
     refreshBulkStockIfOpen();
   } catch(e) {
@@ -2411,23 +2615,34 @@ async function deleteLog(logId) {
   if (!confirm('この記録を削除しますか？\n※この操作は元に戻せません')) return;
   _deletingLog = true;
   var pg = progressStart('記録を削除しています…');
+  var delBody = { logId: logId };
+  if (currentHistoryPrescriptionId) delBody.returnLogs = true;
+  if (currentPatient) { delBody.returnPrescriptions = true; delBody.patientId = currentPatient.patientId; }
   try {
-    await api('deleteLog', null, { logId: logId });
+    var delRes = await api('deleteLog', null, delBody);
     toast('✓ 記録を削除しました');
-    // 履歴・患者詳細を並列で再取得（互いに依存しないため）
-    progressStep(pg, '最新データを取得しています…');
-    await Promise.all([
-      currentHistoryPrescriptionId
-        ? api('getLogs', { prescriptionId: currentHistoryPrescriptionId }).then(function(logs) {
-            renderHistory(logs);
-          })
-        : Promise.resolve(),
-      currentPatient
-        ? api('getPrescriptions', { patientId: currentPatient.patientId }).then(function(prescriptions) {
-            renderPatientDetail(currentPatient, prescriptions);
-          })
-        : Promise.resolve(),
-    ]);
+    // logs/prescriptionsは個別にtry-catchされているため、フォールバックも
+    // フィールド単位で判定する（片方だけ埋め込み失敗→もう片方が更新されず
+    // サイレントに古いままになるのを防ぐ）。
+    var delNeedLogsFetch = !!currentHistoryPrescriptionId && !(delRes && delRes.logs);
+    var delNeedPresFetch = !!currentPatient && !(delRes && delRes.prescriptions);
+    if (delRes && delRes.logs && currentHistoryPrescriptionId) renderHistory(delRes.logs);
+    if (delRes && delRes.prescriptions && currentPatient) renderPatientDetail(currentPatient, delRes.prescriptions);
+    if (delNeedLogsFetch || delNeedPresFetch) {
+      progressStep(pg, '最新データを取得しています…');
+      await Promise.all([
+        delNeedLogsFetch
+          ? api('getLogs', { prescriptionId: currentHistoryPrescriptionId }).then(function(logs) {
+              renderHistory(logs);
+            })
+          : Promise.resolve(),
+        delNeedPresFetch
+          ? api('getPrescriptions', { patientId: currentPatient.patientId }).then(function(prescriptions) {
+              renderPatientDetail(currentPatient, prescriptions);
+            })
+          : Promise.resolve(),
+      ]);
+    }
     // 一括残数ページが開いていれば在庫を再読み込み
     refreshBulkStockIfOpen();
   } catch(e) {
@@ -2521,7 +2736,9 @@ async function submitAddPrescription() {
   _addRxSubmitting = true;
   var pg = progressStart('処方を追加しています…');
   try {
-    await api('addPrescription', null, {
+    // returnPrescriptions:true で、追加後の処方一覧をこの応答に同梱してもらい、
+    // 別途getPrescriptionsを呼ぶ往復を省く
+    var addRxRes = await api('addPrescription', null, {
       patientId:   currentPatient.patientId,
       hospitalId:  currentPatient.hospitalId,
       medicineId:  medicineId,
@@ -2530,13 +2747,19 @@ async function submitAddPrescription() {
       dailyAmount: parseFloat(amount),
       stock:       stock ? parseFloat(stock) : 0,
       startDate:   date,
-      memo:        memo
+      memo:        memo,
+      returnPrescriptions: true
     });
     toast('✓ 処方を追加しました');
     closeModal('addRxModal');
-    progressStep(pg, '最新の処方を取得しています…');
-    var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
-    renderPatientDetail(currentPatient, prescriptions);
+    if (addRxRes && addRxRes.prescriptions) {
+      renderPatientDetail(currentPatient, addRxRes.prescriptions);
+    } else {
+      // 同梱データが無い場合（旧バックエンド等）は従来どおり別途取得
+      progressStep(pg, '最新の処方を取得しています…');
+      var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
+      renderPatientDetail(currentPatient, prescriptions);
+    }
   } catch(e) {
     progressFail(pg);
     toast('エラー: ' + e.message);
@@ -2981,7 +3204,11 @@ var visitBottleOverrides = {}; // {prescriptionId: 変更本数}
 async function loadHospitals() {
   if (hospitalsLoaded) return;
   try {
-    hospitals = await api('getHospitals');
+    // initApp()のgetInitで既にhospitalsが埋まっていれば再取得せず、
+    // DOM配線（検索セレクト等）だけこの関数で行う。
+    if (!hospitals.length) {
+      hospitals = await api('getHospitals');
+    }
     // 病院・クリニック選択を検索付きセレクトに変換
     var hospitalOptions = hospitals.map(function(h) {
       return { value: h.hospitalId, label: h.hospitalName + '（' + h.facilityName + '）' };
@@ -4088,17 +4315,22 @@ async function saveMaster() {
   _masterSaving = true;
   var pg = progressStart(currentMasterRecord ? '更新しています…' : '追加しています…');
   try {
+    var mstRes;
     if (currentMasterRecord) {
-      // 更新
-      await api('updateMaster', null, { type: currentMasterTab, id: currentMasterRecord[idKey], record: record });
+      // 更新（returnMasters:true で更新後の一覧を同梱してもらい、別途getMastersを省く）
+      mstRes = await api('updateMaster', null, { type: currentMasterTab, id: currentMasterRecord[idKey], record: record, returnMasters: true });
       toast('✓ 更新しました');
     } else {
       // 新規
-      await api('addMaster', null, { type: currentMasterTab, record: record });
+      mstRes = await api('addMaster', null, { type: currentMasterTab, record: record, returnMasters: true });
       toast('✓ 追加しました');
     }
     closeModal('masterModal');
-    delete masterCache[currentMasterTab]; // 書込後は必ず最新を取り直す
+    if (mstRes && mstRes.masters) {
+      masterCache[currentMasterTab] = mstRes.masters;
+    } else {
+      delete masterCache[currentMasterTab]; // 同梱データが無い場合（旧バックエンド等）は必ず最新を取り直す
+    }
     loadMasterList(currentMasterTab);
   } catch(e) {
     progressFail(pg);
@@ -4118,10 +4350,14 @@ async function deleteMasterRow() {
   _masterDeleting = true;
   var pg = progressStart('削除しています…');
   try {
-    await api('deleteMaster', null, { type: currentMasterTab, id: id });
+    var delMstRes = await api('deleteMaster', null, { type: currentMasterTab, id: id, returnMasters: true });
     toast('✓ 削除しました');
     closeModal('masterModal');
-    delete masterCache[currentMasterTab]; // 書込後は必ず最新を取り直す
+    if (delMstRes && delMstRes.masters) {
+      masterCache[currentMasterTab] = delMstRes.masters;
+    } else {
+      delete masterCache[currentMasterTab]; // 同梱データが無い場合（旧バックエンド等）は必ず最新を取り直す
+    }
     loadMasterList(currentMasterTab);
   } catch(e) {
     progressFail(pg);
