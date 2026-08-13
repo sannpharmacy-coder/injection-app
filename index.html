@@ -232,15 +232,6 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 }
 #toast.show { opacity: 1; }
 
-/* 起動時キャッシュ即時表示中の「更新中」バッジ（改善3: SWR先行表示） */
-#staleBadge {
-  position: fixed; top: calc(env(safe-area-inset-top, 0px) + 9px); left: 12px; z-index: 999;
-  background: var(--gray-700); color: var(--white); padding: 4px 12px; border-radius: 20px;
-  font-size: 12px; font-weight: 600; opacity: 0; transition: opacity .18s ease; pointer-events: none;
-  white-space: nowrap;
-}
-#staleBadge.show { opacity: .85; }
-
 /* ============================================================
    書き込み進捗バー（画面最上部・indeterminate）
    ・書き込み系（登録/編集/削除/一括登録）でのみ表示
@@ -867,10 +858,20 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 
 <div id="progressBar" aria-hidden="true"><div class="pg-fill"></div></div>
 <div id="progressLabel" role="status" aria-live="polite"></div>
-<div id="staleBadge"></div>
 <div id="toast"></div>
 
 <script>
+// ============================================================
+// 旧永続キャッシュ(initCache_v1)の後始末（チーフレビュー2巡目・2026-08-12）
+// ------------------------------------------------------------
+// @31で稼働していた患者一覧の永続キャッシュを利用者端末から消すための一回限りの
+// 処理。initApp()内に置くとPIN未保存・PIN判定分岐の後になり、初回セットアップの
+// 端末やPIN不一致で離脱した端末では実行されないまま残ってしまう。
+// PIN状態・ネットワーク状態を問わず必ず実行されるよう、スクリプト読み込み直後
+// （DOMContentLoadedより前・PIN判定より前）の同期処理として置く。
+// ============================================================
+try { localStorage.removeItem('initCache_v1'); } catch (e) {}
+
 // ============================================================
 // GAS URL 管理（localStorage で永続化）
 // ============================================================
@@ -907,8 +908,11 @@ async function savePinFromSetup() {
     await api('ping');  // PINが正しいか検証
     document.getElementById('setupOverlay').classList.remove('open');
     toast('ログインしました ✓', 2000);
-    loadAllPatients();
-    loadAlerts();
+    // 個別のloadAllPatients()+loadAlerts()ではなく、initApp()に一本化する
+    // （チーフレビュー2巡目: 初回ログイン後も患者一覧・アラート・設定・病院一覧を
+    // getInit 1回でまとめて取得する。DOMContentLoaded時点でPIN保有済みだった
+    // 場合の初期化経路と同じ関数を通ることで、二重の初期化ロジックを持たない）。
+    initApp();
   } catch(e) {
     localStorage.removeItem('appPin');
     toast(e.message || 'PINが正しくありません');
@@ -1239,8 +1243,12 @@ async function api(action, params, body) {
     _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true });
     return data;
   } catch (e) {
-    // 読み取り系のみ1回だけ自動リトライする（冪等なので安全）。
-    if (!isWrite) {
+    // 読み取り系かつ「再試行しても結果が変わらない」と分かっているエラーではない
+    // 場合のみ、1回だけ自動リトライする（冪等なので安全）。unauthorized・サーバーが
+    // 返した業務エラー(data.error)はe.noRetry=trueが付き、対象外になる
+    // （_apiRequest参照。再試行しても同じ結果を返すだけで、ロック待ち直列化のある
+    // 書き込み系はもちろん、読み取り系でも無駄な二重リクエストになるだけのため）。
+    if (!isWrite && !e.noRetry) {
       try {
         var data2 = await _apiRequest(action, params, body);
         _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true, retried: true });
@@ -1312,9 +1320,16 @@ async function _apiRequest(action, params, body) {
     localStorage.removeItem('appPin');
     var ov = document.getElementById('setupOverlay');
     if (ov) ov.classList.add('open');
-    throw new Error('PINが正しくありません。再入力してください。');
+    var errAuth = new Error('PINが正しくありません。再入力してください。');
+    errAuth.noRetry = true;     // PINが違う限り再試行しても必ず同じ結果になる
+    errAuth.isAuthError = true; // 呼び出し元(initApp等)が個別フォールバックを止めるための判定に使う
+    throw errAuth;
   }
-  if (data && data.error) throw new Error(data.error);
+  if (data && data.error) {
+    var errBiz = new Error(data.error);
+    errBiz.noRetry = true; // サーバーが返した業務エラーは再試行しても同じ結果になる
+    throw errBiz;
+  }
   return data;
 }
 
@@ -1591,59 +1606,19 @@ async function loadAllPatients() {
 }
 
 // ============================================================
-// 起動時まとめ取得（改善2: getInit 1リクエスト化 ／ 改善3: キャッシュ先行表示）
+// 起動時まとめ取得（改善2: getInit 1リクエスト化）
 // ------------------------------------------------------------
-// 患者一覧・病院一覧・往診設定は「多少古くても実害がない」一覧データなので
-// localStorageにキャッシュし、起動時はまずキャッシュで即描画→裏で最新を取得して
-// 差し替える(stale-while-revalidate)。在庫数値・枯渇日・アラートは医療データの
-// 正確性が重要なため、この即時表示の対象外＝常に最新を取りに行く
-// （getInitのレスポンス到着後にのみ描画する）。
+// 患者一覧・病院一覧・往診設定の永続キャッシュ(旧initCache_v1・stale-while-revalidate)
+// はチーフレビューで差し戻し、廃止した。患者氏名を含む一覧をlocalStorageへ
+// 永続保存すること自体がリスクと判断されたため、キャッシュ先行表示は行わず、
+// getInitの応答を待ってから描画する。getInit自体（1リクエストへのまとめ）は維持。
 // ============================================================
-var INIT_CACHE_KEY = 'initCache_v1';
-
-function _loadInitCache() {
-  try {
-    var raw = localStorage.getItem(INIT_CACHE_KEY);
-    if (!raw) return null;
-    var obj = JSON.parse(raw);
-    if (!obj || !obj.patients) return null;
-    return obj;
-  } catch (e) { return null; }
-}
-
-function _saveInitCache(data) {
-  try {
-    data.savedAt = Date.now();
-    localStorage.setItem(INIT_CACHE_KEY, JSON.stringify(data));
-  } catch (e) { /* 容量超過等は無視（キャッシュは無くても動作に支障ない） */ }
-}
-
-function _showStaleBadge(savedAt) {
-  var el = document.getElementById('staleBadge');
-  if (!el) return;
-  var d = savedAt ? new Date(savedAt) : null;
-  var hm = d ? (String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0')) : '';
-  el.textContent = (hm ? '最終更新 ' + hm + '・' : '') + '更新中…';
-  el.classList.add('show');
-}
-function _hideStaleBadge() {
-  var el = document.getElementById('staleBadge');
-  if (el) el.classList.remove('show');
-}
 
 async function initApp() {
-  // 1) キャッシュがあれば即座に一覧を表示（在庫数値・アラートはキャッシュ対象外）
-  var cached = _loadInitCache();
-  if (cached) {
-    _allPatients = cached.patients || [];
-    renderPatientListGrouped(_allPatients);
-    if (cached.hospitals) hospitals = cached.hospitals;
-    if (cached.settings && cached.settings.visitBufferDays) _visitBufferDays = cached.settings.visitBufferDays;
-    _showStaleBadge(cached.savedAt);
-  } else {
-    loading('searchResults');
-  }
-  // 2) 裏で最新を1リクエストにまとめて取得し、届いたら差し替える
+  // initCache_v1の後始末はスクリプト読み込み直後（PIN判定より前）に移動済み。
+  // ここでは行わない（チーフレビュー2巡目: PIN未保存の初回セットアップ端末では
+  // initApp()自体が呼ばれないため、ここに置いても保証にならなかった）。
+  loading('searchResults');
   try {
     var t = getAlertThresholds();
     var init = await api('getInit', { dangerDays: t.dangerDays, warningDays: t.warningDays });
@@ -1657,12 +1632,13 @@ async function initApp() {
       if (inp) inp.value = init.settings.visitBufferDays;
     }
     if (init.hospitals) hospitals = init.hospitals; // DOM配線自体はloadHospitals()が後で行う
-    _saveInitCache({ patients: init.patients, hospitals: init.hospitals, settings: init.settings });
-    _hideStaleBadge();
   } catch(e) {
+    // PIN不一致(unauthorized)は個別APIを呼んでも同じ理由で必ず失敗する。
+    // 無駄な追加リクエストを送らずここで終了する（PIN入力ダイアログは
+    // _apiRequest側で既に開いている）。
+    if (e.isAuthError) return;
     // getInit未対応の旧バックエンド、またはネットワーク不調 → 従来どおり個別取得にフォールバック
     console.warn('getInit失敗、個別取得にフォールバック:', e.message);
-    _hideStaleBadge();
     try {
       var patients2 = await api('getAllPatients');
       _allPatients = patients2 || [];
