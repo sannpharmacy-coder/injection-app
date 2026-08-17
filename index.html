@@ -955,7 +955,7 @@ function saveAlertThresholds() {
   var msg = document.getElementById('alertThresholdSaved');
   if (msg) { msg.style.display = 'inline'; setTimeout(function(){ msg.style.display = 'none'; }, 2000); }
   // アラートを再取得
-  _alertCache = null;
+  invalidateAlertCache();
   loadAlerts();
   toast('アラート閾値を保存しました ✓');
 }
@@ -1009,15 +1009,29 @@ async function saveVisitSettings() {
 // 在庫アラート
 // ============================================================
 var _alertCache = null;
+// アラート取得の世代。initAppがawaitせずに呼ぶため、遅れて届いた古い応答が
+// 新しい結果（しきい値変更後など）を上書きしうる。世代が変わっていたら捨てる。
+var _alertGen = 0;
+
+// アラートキャッシュの無効化。世代も必ず一緒に進める。
+// 世代を進めないと、在庫を変更した時点で飛んでいる途中の取得が後から返り、
+// 変更前の古いアラートをキャッシュしてしまう（在庫を減らしたのに危険表示が出ない）。
+function invalidateAlertCache() {
+  _alertCache = null;
+  _alertGen++;
+}
 
 async function loadAlerts() {
   var banner = document.getElementById('alertBanner');
   if (!banner) return;
   // キャッシュがあれば再描画のみ
   if (_alertCache) { renderAlertBanner(_alertCache); return; }
+  var gen = ++_alertGen;
   try {
     var t = getAlertThresholds();
     var result = await api('getAlerts', { dangerDays: t.dangerDays, warningDays: t.warningDays });
+    // 自分より後に始まった取得がある場合、この応答は古い。捨てる。
+    if (gen !== _alertGen) return;
     _alertCache = result;
     renderAlertBanner(result);
   } catch(e) {
@@ -1046,12 +1060,12 @@ function renderAlertBanner(data) {
     html += '<div class="alert-section-body">';
     dangers.forEach(function(a) {
       var sub = (a.facilityName || a.hospitalName || '') + (a.facilityName ? '' : '');
-      html += '<div class="alert-item" onclick="openPatient(\'' + escapeJs(a.patientId) + '\')">';
+      html += '<div class="alert-item" onclick="openPatient(\'' + escAttrJs(a.patientId) + '\')">';
       html += '<div class="alert-item-main">';
       html += '<div class="alert-item-name">' + escHtml(a.patientName) + ' <span style="font-size:12px;font-weight:400;color:var(--gray-400)">' + escHtml(a.medicineName) + '</span></div>';
       if (sub) html += '<div class="alert-item-sub">' + escHtml(sub) + '</div>';
       html += '</div>';
-      html += '<div class="alert-item-days danger">あと ' + a.daysUntilDepletion + '日</div>';
+      html += '<div class="alert-item-days danger">あと ' + escHtml(a.daysUntilDepletion) + '日</div>';
       html += '</div>';
     });
     html += '</div></div>';
@@ -1067,12 +1081,12 @@ function renderAlertBanner(data) {
     html += '<div class="alert-section-body">';
     warnings.forEach(function(a) {
       var sub = a.facilityName || a.hospitalName || '';
-      html += '<div class="alert-item" onclick="openPatient(\'' + escapeJs(a.patientId) + '\')">';
+      html += '<div class="alert-item" onclick="openPatient(\'' + escAttrJs(a.patientId) + '\')">';
       html += '<div class="alert-item-main">';
       html += '<div class="alert-item-name">' + escHtml(a.patientName) + ' <span style="font-size:12px;font-weight:400;color:var(--gray-400)">' + escHtml(a.medicineName) + '</span></div>';
       if (sub) html += '<div class="alert-item-sub">' + escHtml(sub) + '</div>';
       html += '</div>';
-      html += '<div class="alert-item-days warning">あと ' + a.daysUntilDepletion + '日</div>';
+      html += '<div class="alert-item-days warning">あと ' + escHtml(a.daysUntilDepletion) + '日</div>';
       html += '</div>';
     });
     html += '</div></div>';
@@ -1098,9 +1112,10 @@ function renderAlertBanner(data) {
       var isOrphan = issue.type === 'orphan_log';
       // 孤立ログ以外はpatientIdがあれば患者ページへ遷移
       var clickAttr = (!isOrphan && issue.patientId && issue.patientId !== '不明')
-        ? 'onclick="openPatient(\'' + escapeJs(issue.patientId) + '\')" style="cursor:pointer"'
+        ? 'onclick="openPatient(\'' + escAttrJs(issue.patientId) + '\')" style="cursor:pointer"'
         : 'style="cursor:default"';
-      var itemId = isOrphan ? ' id="orphan-item-' + escapeJs(issue.prescriptionId) + '"' : '';
+      // id属性は素の属性値。getElementById は生の値で引くので escHtml だけを掛ける。
+      var itemId = isOrphan ? ' id="orphan-item-' + escHtml(issue.prescriptionId) + '"' : '';
       html += '<div class="alert-item"' + itemId + ' ' + clickAttr + ' style="' + (isOrphan ? 'cursor:default;' : (issue.patientId && issue.patientId !== '不明' ? 'cursor:pointer;' : 'cursor:default;')) + 'align-items:center">';
       html += '<div class="alert-item-main">';
       html += '<div class="alert-item-name" style="color:var(--warning)">' + escHtml(issue.label) + '</div>';
@@ -1112,7 +1127,7 @@ function renderAlertBanner(data) {
       }
       // 孤立ログには「無視」チェックボックスを表示
       if (isOrphan) {
-        var safeId = escapeJs(issue.prescriptionId);
+        var safeId = escAttrJs(issue.prescriptionId);
         html += '<label onclick="event.stopPropagation()" style="display:flex;align-items:center;gap:4px;cursor:pointer;flex-shrink:0;margin-left:8px;font-size:12px;color:var(--gray-400);white-space:nowrap">'
           + '<input type="checkbox" onchange="toggleIgnoreOrphan(\'' + safeId + '\',this.checked)" style="width:15px;height:15px;cursor:pointer;flex-shrink:0"> 無視</label>';
       }
@@ -1145,7 +1160,7 @@ function toggleIgnoreOrphan(prescriptionId, checked) {
     delete map[prescriptionId];
   }
   localStorage.setItem('ignoredOrphanIds', JSON.stringify(map));
-  _alertCache = null;
+  invalidateAlertCache();
 
   if (checked) {
     // 該当アイテムをフェードアウトして削除（セクションは閉じない）
@@ -1176,7 +1191,25 @@ function toggleIgnoreOrphan(prescriptionId, checked) {
 }
 
 function escHtml(str) {
-  return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  // 空にしてよいのは null / undefined だけ。0 や false を空文字にすると
+  // 「あと 0日」のような正当な表示が消える。
+  var s = (str === null || str === undefined) ? '' : String(str);
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// 添付写真のURL。Googleドライブ由来のhttpsリンクだけを通す。
+// javascript: や data: など別スキーム、想定外のホストは空文字にしてリンクを出さない。
+// new URL() に依存せず正規表現で判定する（テストハーネス上でも同じ挙動にするため）。
+var PHOTO_URL_ALLOWED_HOSTS = ['drive.google.com', 'docs.google.com', 'lh3.googleusercontent.com'];
+function safeDriveUrl(u) {
+  var raw = String(u || '').trim();
+  var m = /^https:\/\/([a-z0-9.-]+)(\/|$)/i.exec(raw);
+  if (!m) return '';
+  if (PHOTO_URL_ALLOWED_HOSTS.indexOf(m[1].toLowerCase()) < 0) return '';
+  // 生のURLを返す。DOMプロパティ(href)へはこの値をそのまま入れる。
+  // HTML文字列へ埋め込む場合は呼び出し側で escHtml を通すこと
+  // （ここでエスケープすると ?export=view&id=... の & が &amp; に化けてリンクが壊れる）。
+  return raw;
 }
 
 // ============================================================
@@ -1187,6 +1220,15 @@ function escHtml(str) {
 const WRITE_ACTIONS_FRONT = {
   addLog: 1, addBulkLogs: 1, addBulkReceipts: 1, addVisitPlan: 1, updateLog: 1, deleteLog: 1,
   updatePrescription: 1, addPrescription: 1, uploadPhoto: 1,
+  addMaster: 1, updateMaster: 1, deleteMaster: 1, setSettings: 1,
+};
+
+// 在庫アラートの算出結果を変えうる書き込み。成功した時点で api() が一括で
+// アラートキャッシュを落とす（呼び出し側ごとに書くと漏れる。実際に漏れていた）。
+// uploadPhoto と addVisitPlan は在庫・処方を変えないため対象外。
+const ALERT_AFFECTING_ACTIONS = {
+  addLog: 1, addBulkLogs: 1, addBulkReceipts: 1, updateLog: 1, deleteLog: 1,
+  updatePrescription: 1, addPrescription: 1,
   addMaster: 1, updateMaster: 1, deleteMaster: 1, setSettings: 1,
 };
 
@@ -1241,6 +1283,9 @@ async function api(action, params, body) {
   try {
     var data = await _apiRequest(action, params, body);
     _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true });
+    // 在庫・処方・マスタを変えたらアラートは作り直す。
+    // 世代も進むので、飛んでいる途中の古い取得が後から書き戻すこともない。
+    if (ALERT_AFFECTING_ACTIONS[action]) invalidateAlertCache();
     return data;
   } catch (e) {
     // 読み取り系かつ「再試行しても結果が変わらない」と分かっているエラーではない
@@ -1344,7 +1389,7 @@ function showPage(page) {
   document.getElementById('page-' + page).classList.add('active');
   var nb = document.getElementById('nav-' + page);
   if (nb) nb.classList.add('active');
-  if (page === 'search')   { loadAllPatients(); loadAlerts(); }
+  if (page === 'search')   { renderSearchPrompt(); loadAlerts(); }
   if (page === 'visit')    { loadHospitals(); setDefaultDates(); }
   if (page === 'bulk')     { loadHospitals().then(function() { initBulkPage(); }); }
   if (page === 'settings') { initAlertThresholdInputs(); loadVisitSettings(); renderCommLog(); }
@@ -1576,33 +1621,41 @@ function pad(n) { return String(n).padStart(2, '0'); }
 // 患者検索
 // ============================================================
 var searchTimer = null;
-var _allPatients = []; // 全患者キャッシュ
+// 入力から検索を投げるまでの待ち時間。打鍵ごとに投げないためのもの。
+// 従来の400msは体感の遅さに直結していたので短くする。
+// 患者検索が読むのは患者・病院・施設のマスタ3枚だけで、在庫計算は伴わない。
+var SEARCH_DEBOUNCE_MS = 150;
+
+// 検索の世代。応答が返る順番は問い合わせた順番と一致しない。
+// 番号を照合せずに描画すると、後から返った古い応答が新しい結果を上書きし、
+// 入力欄と表示内容がズレる（別の患者を選ぶ入口になる）。
+// 新しい問い合わせ・入力のクリアの時点で番号を進め、番号が変わった応答は捨てる。
+var _searchGen = 0;
+
+// 検索欄が空のときの表示。全患者一覧は描かない。
+// 全件をDOMへ組み立てるコストが起動時にかかっていたが、実際の運用は検索から入るため不要。
+function renderSearchPrompt() {
+  var el = document.getElementById('searchResults');
+  if (!el) return;
+  el.innerHTML = '<div class="empty-state">氏名・生年月日コード・施設名で検索してください</div>';
+}
 
 document.getElementById('searchInput').addEventListener('input', function() {
-  clearTimeout(searchTimer);
-  var q = this.value.trim();
-  if (q.length < 1) {
-    // 検索欄が空になったら全患者一覧に戻す
-    renderPatientListGrouped(_allPatients);
-    return;
-  }
-  searchTimer = setTimeout(function() { doSearch(q); }, 400);
+  handleSearchInput(this.value);
 });
 
-// 検索ページを開いたとき全患者一覧を読み込む
-async function loadAllPatients() {
-  if (_allPatients.length > 0) {
-    renderPatientListGrouped(_allPatients);
+function handleSearchInput(raw) {
+  clearTimeout(searchTimer);
+  var q = String(raw || '').trim();
+  // 入力が変わった時点で、飛んでいる途中の応答は「もう求められていない結果」になる。
+  // ここで番号を進めておかないと、debounce待ちの150msのあいだに前の応答が返り、
+  // 入力欄と一致しない患者カードが描かれる（空にしたときだけでは足りない）。
+  _searchGen++;
+  if (q.length < 1) {
+    renderSearchPrompt();
     return;
   }
-  loading('searchResults');
-  try {
-    var patients = await api('getAllPatients');
-    _allPatients = patients || [];
-    renderPatientListGrouped(_allPatients);
-  } catch(e) {
-    document.getElementById('searchResults').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
-  }
+  searchTimer = setTimeout(function() { doSearch(q); }, SEARCH_DEBOUNCE_MS);
 }
 
 // ============================================================
@@ -1621,116 +1674,76 @@ async function initApp() {
   loading('searchResults');
   try {
     var t = getAlertThresholds();
-    var init = await api('getInit', { dangerDays: t.dangerDays, warningDays: t.warningDays });
-    _allPatients = init.patients || [];
-    renderPatientListGrouped(_allPatients);
-    _alertCache = init.alerts;
-    renderAlertBanner(init.alerts);
+    // 在庫アラートは全処方のログをリプレイするため、他より桁違いに重い。
+    // 同じリクエストで待つと操作可能になるまでの時間がアラート計算に引きずられるので、
+    // includeAlerts:false で先に軽い部分だけ受け取り、アラートは後から追いかける。
+    // 患者一覧も受け取らない（検索はそのつどサーバへ問い合わせるので使わない）。
+    var init = await api('getInit', {
+      dangerDays: t.dangerDays, warningDays: t.warningDays,
+      includeAlerts: 'false', includePatients: 'false',
+    });
+    renderSearchPrompt();
+    if (init.alerts) {
+      // 旧バックエンド（includeAlertsを解さない）はアラートを同梱して返す。
+      _alertCache = init.alerts;
+      renderAlertBanner(init.alerts);
+    }
     if (init.settings && init.settings.visitBufferDays) {
       _visitBufferDays = init.settings.visitBufferDays;
       var inp = document.getElementById('settingsVisitBufferDays');
       if (inp) inp.value = init.settings.visitBufferDays;
     }
     if (init.hospitals) hospitals = init.hospitals; // DOM配線自体はloadHospitals()が後で行う
+    if (!init.alerts) {
+      // アラートは待たない。届いた時点でバナーを出す。
+      // 失敗しても患者検索は使えるので、起動そのものは落とさない。
+      loadAlerts();
+    }
   } catch(e) {
     // PIN不一致(unauthorized)は個別APIを呼んでも同じ理由で必ず失敗する。
     // 無駄な追加リクエストを送らずここで終了する（PIN入力ダイアログは
     // _apiRequest側で既に開いている）。
     if (e.isAuthError) return;
     // getInit未対応の旧バックエンド、またはネットワーク不調 → 従来どおり個別取得にフォールバック
-    console.warn('getInit失敗、個別取得にフォールバック:', e.message);
-    try {
-      var patients2 = await api('getAllPatients');
-      _allPatients = patients2 || [];
-      renderPatientListGrouped(_allPatients);
-    } catch(e2) {
-      document.getElementById('searchResults').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e2.message) + '</div>';
-    }
+    console.warn('getInit失敗:', e.message);
+    // 患者一覧は使わないので取りに行かない。検索は都度サーバへ問い合わせる。
+    renderSearchPrompt();
     loadAlerts();
   }
 }
 
 async function doSearch(q) {
+  var gen = ++_searchGen;
   loading('searchResults');
   try {
     var results = await api('searchPatients', { q: q });
+    // 自分より後に始まった検索がある。この応答は古いので描かない。
+    if (gen !== _searchGen) return;
     renderSearchResults(results);
   } catch(e) {
+    // エラー表示も同じ。古い問い合わせの失敗で新しい結果を消さない。
+    if (gen !== _searchGen) return;
     document.getElementById('searchResults').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
   }
 }
 
 // 施設グループ分け・50音順で全患者一覧を表示
-function renderPatientListGrouped(patients) {
-  var el = document.getElementById('searchResults');
-  if (!patients || !patients.length) {
-    el.innerHTML = '<div class="empty-state">患者データがありません</div>';
-    return;
-  }
-
-  // 名前・IDが両方ない患者は表示しない
-  patients = patients.filter(function(p) {
-    return (p.name && p.name.trim()) || (p.patientId && p.patientId.trim()) || (p.searchId && p.searchId.trim());
-  });
-
-  if (!patients.length) {
-    el.innerHTML = '<div class="empty-state">患者データがありません</div>';
-    return;
-  }
-
-  // 施設ごとにグループ化
-  var facilityGroups = {};
-  var facilityOrder  = [];
-  patients.forEach(function(p) {
-    var key = p.facilityName || p.hospitalName || '（施設未設定）';
-    if (!facilityGroups[key]) {
-      facilityGroups[key] = [];
-      facilityOrder.push(key);
-    }
-    facilityGroups[key].push(p);
-  });
-
-  // 施設名を50音順にソート
-  facilityOrder.sort(function(a, b) { return a.localeCompare(b, 'ja'); });
-
-  var html = '';
-  facilityOrder.forEach(function(facName) {
-    var group = facilityGroups[facName];
-    // 患者を50音順にソート
-    group.sort(function(a, b) { return (a.name || '').localeCompare(b.name || '', 'ja'); });
-
-    html += '<div style="padding:10px 16px 4px;font-size:12px;font-weight:700;color:var(--gray-400);'
-      + 'background:var(--gray-100);border-bottom:1px solid var(--gray-200);position:sticky;top:0;z-index:10">'
-      + '🏥 ' + escapeHtml(facName) + ' <span style="font-weight:400">（' + group.length + '名）</span>'
-      + '</div>';
-
-    html += group.map(function(p) {
-      return '<div class="patient-card" onclick="openPatient(\'' + escapeJs(p.patientId) + '\')">'
-        + '<div class="patient-avatar">' + (p.name ? p.name.charAt(0) : '?') + '</div>'
-        + '<div class="patient-info">'
-        + '<div class="patient-name">' + escapeHtml(p.name) + '</div>'
-        + '<div class="patient-sub">' + escapeHtml(p.hospitalName || '') + '　' + (p.searchId || '') + '</div>'
-        + '</div>'
-        + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9aa5b4" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>'
-        + '</div>';
-    }).join('');
-  });
-
-  el.innerHTML = html;
-}
-
 function renderSearchResults(patients) {
   var el = document.getElementById('searchResults');
   if (!patients || !patients.length) {
-    el.innerHTML = '<div class="empty-state">該当する患者が見つかりません</div>';
+    // 登録直後の患者が出ないことがあり得るので、対処法まで書く。
+    el.innerHTML = '<div class="empty-state">該当する患者が見つかりません'
+      + '<div style="font-size:12px;color:var(--gray-400);margin-top:8px;line-height:1.6">'
+      + '登録した直後の患者が出ない場合は、画面を更新してください'
+      + '</div></div>';
     return;
   }
   el.innerHTML = patients.map(function(p) {
-    return '<div class="patient-card" onclick="openPatient(\'' + escapeJs(p.patientId) + '\')">'
-      + '<div class="patient-avatar">' + (p.name ? p.name.charAt(0) : '?') + '</div>'
+    return '<div class="patient-card" onclick="openPatient(\'' + escAttrJs(p.patientId) + '\')">'
+      + '<div class="patient-avatar">' + escHtml(p.name ? p.name.charAt(0) : '?') + '</div>'
       + '<div class="patient-info">'
       + '<div class="patient-name">' + escapeHtml(p.name) + '</div>'
-      + '<div class="patient-sub">' + escapeHtml(p.facilityName || p.hospitalName || '') + '　' + (p.searchId || '') + '</div>'
+      + '<div class="patient-sub">' + escapeHtml(p.facilityName || p.hospitalName || '') + '　' + escHtml(p.searchId || '') + '</div>'
       + '</div>'
       + '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#9aa5b4" stroke-width="2"><path d="m9 18 6-6-6-6"/></svg>'
       + '</div>';
@@ -1740,8 +1753,9 @@ function renderSearchResults(patients) {
 // ============================================================
 // 患者詳細
 // ============================================================
-function openPatientFromVisit(patientId, patientName) {
+function openPatientFromVisit(patientId) {
   // 往診ページから患者詳細を開く（戻るボタンで往診に戻れるよう履歴を維持）
+  // 患者名は受け取らない。表示はHTML本文側で行い、実行文脈へは自由文字列を渡さない。
   openPatient(patientId);
 }
 
@@ -1808,9 +1822,10 @@ function renderRxCard(p, stopped) {
 
   var depClass2 = days !== null && days !== undefined && days <= 7 ? 'depletion-soon' : (days !== null && days !== undefined && days <= 14 ? 'depletion-warn' : '');
 
-  var cap = escapeJs(String(p.capacity || ''));
-  var mname = String(p.medicineName || p.medicineId || '').replace(/'/g,"");
-  var pid = escapeJs(p.prescriptionId);
+  var cap = escAttrJs(String(p.capacity || ''));
+  var mname = escAttrJs(p.medicineName || p.medicineId || '');
+  var pid = escAttrJs(p.prescriptionId);          // 属性内のJS文字列リテラル用
+  var pidAttr = escHtml(p.prescriptionId);        // 素の属性値(id=)用
 
   // 枯渇予定日: 最終ログの値（開封期限加味済み）
   var depDate = p.depletionDate || p.effectiveDepletionDate || '-';
@@ -1818,7 +1833,7 @@ function renderRxCard(p, stopped) {
   // 1日使用回数（吸入薬は不要なので表示しない）
   var isInhaler = (p.medicineType === '吸入薬');
   var dailyCountInfo = (!isInhaler && p.dailyCount && p.dailyCount > 0)
-    ? '<div class="rx-row"><span class="rx-label">1日使用回数</span><span>' + p.dailyCount + ' 回/日</span></div>'
+    ? '<div class="rx-row"><span class="rx-label">1日使用回数</span><span>' + escHtml(p.dailyCount) + ' 回/日</span></div>'
     : '';
 
   // 1本あたりの日数（1本容量 ÷ 1日使用量）
@@ -1837,7 +1852,7 @@ function renderRxCard(p, stopped) {
     var expireStyle = (daysPerBottleVal !== null && p.expireDays < daysPerBottleVal)
       ? 'color:var(--danger);font-weight:700'
       : '';
-    expireDaysInfo = '<div class="rx-row"><span class="rx-label">開封後有効日数</span><span style="' + expireStyle + '">' + p.expireDays + ' 日</span></div>';
+    expireDaysInfo = '<div class="rx-row"><span class="rx-label">開封後有効日数</span><span style="' + expireStyle + '">' + escHtml(p.expireDays) + ' 日</span></div>';
   }
 
   // 枯渇予定日の注記: 開封期限が先に来ている場合のみ注記を付ける
@@ -1846,27 +1861,27 @@ function renderRxCard(p, stopped) {
     : '';
 
   // 用量変更ボタン用に現在の処方値を文字列で渡す
-  var curDailyAmt   = escapeJs(String(p.dailyAmount   || ''));
-  var curDailyCount = escapeJs(String(p.dailyCount    || '1'));
-  var curFreq       = escapeJs(String(p.frequency     || '毎日'));
+  var curDailyAmt   = escAttrJs(String(p.dailyAmount   || ''));
+  var curDailyCount = escAttrJs(String(p.dailyCount    || '1'));
+  var curFreq       = escAttrJs(String(p.frequency     || '毎日'));
   // 受取ボタン用に在庫・枯渇日も渡す
-  var curStock      = escapeJs(String(p.stock !== undefined && p.stock !== null ? p.stock : ''));
-  var curDepDate    = escapeJs(String(p.effectiveDepletionDate || ''));
+  var curStock      = escAttrJs(String(p.stock !== undefined && p.stock !== null ? p.stock : ''));
+  var curDepDate    = escAttrJs(String(p.effectiveDepletionDate || ''));
   var actions = stopped
     ? '<div class="rx-actions">'
-      + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\',\'' + escapeJs(p.medicineType || '') + '\')">📋 履歴</button>'
+      + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\',\'' + escAttrJs(p.medicineType || '') + '\')">📋 履歴</button>'
       + '</div>'
     : '<div class="rx-actions">'
-      + '<button class="btn btn-primary btn-sm" onclick="openLogModal(\'' + pid + '\',\'処方受取\',\'' + mname + '\',\'' + cap + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curFreq + '\',\'' + curStock + '\',\'' + curDepDate + '\',\'' + escapeJs(String(p.expireDays || '9999')) + '\')">受取</button>'
+      + '<button class="btn btn-primary btn-sm" onclick="openLogModal(\'' + pid + '\',\'処方受取\',\'' + mname + '\',\'' + cap + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curFreq + '\',\'' + curStock + '\',\'' + curDepDate + '\',\'' + escAttrJs(String(p.expireDays || '9999')) + '\')">受取</button>'
       + '<button class="btn btn-outline btn-sm" onclick="openLogModal(\'' + pid + '\',\'残数確認\',\'' + mname + '\',\'' + cap + '\')">残数</button>'
       + '<button class="btn btn-outline btn-sm" onclick="openLogModal(\'' + pid + '\',\'用量変更\',\'' + mname + '\',\'' + cap + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curFreq + '\')">変更</button>'
-      + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\',\'' + escapeJs(p.medicineType || '') + '\')">履歴</button>'
+      + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\',\'' + escAttrJs(p.medicineType || '') + '\')">履歴</button>'
       + '</div>';
 
   // データ整合性チェック除外トグル
   var skipToggle = '<div class="rx-skip-check" style="padding:8px 0 0;border-top:1px solid var(--gray-200);margin-top:8px;display:flex;align-items:center;gap:8px">'
     + '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;font-size:13px;color:var(--gray-400);margin:0">'
-    + '<input type="checkbox" id="skip-' + pid + '" ' + (p.skipIntegrityCheck ? 'checked' : '') + ' onchange="toggleSkipIntegrityCheck(\'' + pid + '\',this.checked)" style="width:16px;height:16px;cursor:pointer">'
+    + '<input type="checkbox" id="skip-' + pidAttr + '" ' + (p.skipIntegrityCheck ? 'checked' : '') + ' onchange="toggleSkipIntegrityCheck(\'' + pid + '\',this.checked)" style="width:16px;height:16px;cursor:pointer">'
     + 'データ整合性チェックを除外'
     + '</label>'
     + '</div>';
@@ -1885,15 +1900,15 @@ function renderRxCard(p, stopped) {
     +   '</div>'
     +   (p.lastLogDate ? '<div style="font-size:11px;color:var(--gray-400);padding-left:2px">' + escHtml(p.lastLogDate) + ' 確認分から日割り計算</div>' : '')
     + '</div>'
-    + '<div class="rx-row"><span class="rx-label">使用頻度</span><span>' + (p.frequency || '-') + '</span></div>'
+    + '<div class="rx-row"><span class="rx-label">使用頻度</span><span>' + escHtml(p.frequency || '-') + '</span></div>'
     + dailyCountInfo
-    + '<div class="rx-row"><span class="rx-label">1日使用量</span><span>' + (p.dailyAmount || '-') + ' 単位/日</span></div>'
+    + '<div class="rx-row"><span class="rx-label">1日使用量</span><span>' + escHtml(p.dailyAmount || '-') + ' 単位/日</span></div>'
     + daysPerBottleInfo
     + expireDaysInfo
     + '<div class="rx-row">'
     +   '<span class="rx-label">枯渇予定日</span>'
     +   '<span style="display:flex;align-items:center;flex-wrap:wrap;justify-content:flex-end;gap:2px">'
-    +     '<span class="' + depClass2 + '">' + depDate + '</span>'
+    +     '<span class="' + depClass2 + '">' + escHtml(depDate) + '</span>'
     +     openExpireNote
     +   '</span>'
     + '</div>'
@@ -1913,7 +1928,7 @@ async function toggleSkipIntegrityCheck(prescriptionId, checked) {
       prescriptionId: prescriptionId,
       skipIntegrityCheck: checked,  // GAS側のupdatePrescriptionで受け取る
     });
-    _alertCache = null; // アラートを再取得
+    invalidateAlertCache(); // アラートを再取得
     toast(checked ? '✓ チェックを除外設定しました' : '✓ チェックを再有効化しました');
   } catch(e) {
     progressFail(pg);
@@ -2305,6 +2320,16 @@ var _deletingLog = false;
 var _addRxSubmitting = false;
 var _masterSaving = false;
 var _masterDeleting = false;
+var _visitPlanSaving = false;
+// 描画された往診計算結果の世代。renderVisitResultsのたびに増やし、保存処理は
+// 開始時点の世代を不変のスナップショットとして持つことで、保存中に新しい
+// 計算結果へ切り替わっても、古い保存処理の完了が「今表示している結果」の
+// 状態表示を書き換えないようにする（2026-08チーフレビュー対応）。
+var _visitPlanResultGen = 0;
+// calcVisitの通信要求ごとの世代。連続してcalcVisitを実行した場合、遅れて届いた
+// 古い要求の応答（成功・失敗いずれも）が、既に表示されている新しい計算結果を
+// 上書きしないようにする（2026-08チーフレビュー対応・指摘#5）。
+var _visitCalcRequestGen = 0;
 async function submitLog() {
   // 二重送信ガード: 連打・二度押しで同じログが重複記録されるのを防ぐ
   if (_logSubmitting) return;
@@ -2363,7 +2388,7 @@ async function submitLog() {
     // 別途getPrescriptionsを呼ぶ往復を省く
     body.returnPrescriptions = true;
     var addRes = await api('addLog', null, body);
-    _alertCache = null; // 在庫変更のためアラートを再取得
+    invalidateAlertCache(); // 在庫変更のためアラートを再取得
     toast('✓ ' + action + 'を記録しました');
     closeModal('logModal');
     if (currentPatient) {
@@ -2415,7 +2440,7 @@ function renderHistory(logs) {
   var colors = { '処方受取': '#1a6fbf', '残数確認': '#2e7d32', '用量変更': '#e65100', '中止': '#c62828' };
   document.getElementById('historyContent').innerHTML = logs.map(function(l) {
     var color = colors[l.action] || '#3d4d5c';
-    var lid = escapeJs(l.logId || '');
+    var lid = escAttrJs(l.logId || '');
     // 受取前在庫（本数換算）
     var beforeStr = '';
     if (l.beforeStock !== '' && l.beforeStock !== undefined && l.beforeStock !== null) {
@@ -2433,21 +2458,21 @@ function renderHistory(logs) {
     }
     return '<div style="padding:12px 0;border-bottom:1px solid #e8ecf0;">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
-      + '<span style="font-weight:700;font-size:14px;color:' + color + '">' + l.action + '</span>'
-      + '<span style="font-size:13px;color:#9aa5b4">' + (l.date || '') + (inputTime ? '　' + inputTime : '') + '</span>'
+      + '<span style="font-weight:700;font-size:14px;color:' + color + '">' + escHtml(l.action) + '</span>'
+      + '<span style="font-size:13px;color:#9aa5b4">' + escHtml(l.date || '') + (inputTime ? '　' + escHtml(inputTime) : '') + '</span>'
       + '</div>'
-      + (l.bottles ? '<div style="font-size:13px">受取本数: <b>' + l.bottles + '</b> 本</div>' : '')
+      + (l.bottles ? '<div style="font-size:13px">受取本数: <b>' + escHtml(l.bottles) + '</b> 本</div>' : '')
       + beforeStr
       + afterStr
-      + (l.dailyAmount ? '<div style="font-size:13px">1日使用量: <b>' + l.dailyAmount + '</b> 単位/日</div>' : '')
-      + ((l.dailyCount && !historyIsInhaler) ? '<div style="font-size:13px">1日回数: <b>' + l.dailyCount + '</b> 回/日</div>' : '')
-      + (l.frequency ? '<div style="font-size:13px">使用頻度: <b>' + l.frequency + '</b></div>' : '')
-      + (l.newDailyAmount ? '<div style="font-size:13px;color:#e65100">→ 変更後使用量: <b>' + l.newDailyAmount + '</b> 単位/日</div>' : '')
-      + (l.nextVisitDate && l.nextVisitDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">次回処方予定: ' + l.nextVisitDate + '</div>' : '')
-      + (l.needleCount ? '<div style="font-size:13px;color:#9aa5b4">針: ' + l.needleCount + ' 本</div>' : '')
-      + (l.depletionDate && l.depletionDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">枯渇予定: ' + l.depletionDate + '</div>' : '')
-      + (l.memo ? '<div style="font-size:13px;color:#9aa5b4;margin-top:4px">📝 ' + l.memo + '</div>' : '')
-      + (l.photoUrl ? '<div style="margin-top:8px"><a href="' + l.photoUrl + '" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#1a6fbf;background:#e3f2fd;border:1px solid #90caf9;padding:7px 14px;border-radius:8px;text-decoration:none">📷 添付写真を開く（Googleドライブ）</a></div>' : '')
+      + (l.dailyAmount ? '<div style="font-size:13px">1日使用量: <b>' + escHtml(l.dailyAmount) + '</b> 単位/日</div>' : '')
+      + ((l.dailyCount && !historyIsInhaler) ? '<div style="font-size:13px">1日回数: <b>' + escHtml(l.dailyCount) + '</b> 回/日</div>' : '')
+      + (l.frequency ? '<div style="font-size:13px">使用頻度: <b>' + escHtml(l.frequency) + '</b></div>' : '')
+      + (l.newDailyAmount ? '<div style="font-size:13px;color:#e65100">→ 変更後使用量: <b>' + escHtml(l.newDailyAmount) + '</b> 単位/日</div>' : '')
+      + (l.nextVisitDate && l.nextVisitDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">次回処方予定: ' + escHtml(l.nextVisitDate) + '</div>' : '')
+      + (l.needleCount ? '<div style="font-size:13px;color:#9aa5b4">針: ' + escHtml(l.needleCount) + ' 本</div>' : '')
+      + (l.depletionDate && l.depletionDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">枯渇予定: ' + escHtml(l.depletionDate) + '</div>' : '')
+      + (l.memo ? '<div style="font-size:13px;color:#9aa5b4;margin-top:4px">📝 ' + escHtml(l.memo) + '</div>' : '')
+      + (safeDriveUrl(l.photoUrl) ? '<div style="margin-top:8px"><a href="' + escHtml(safeDriveUrl(l.photoUrl)) + '" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#1a6fbf;background:#e3f2fd;border:1px solid #90caf9;padding:7px 14px;border-radius:8px;text-decoration:none">📷 添付写真を開く（Googleドライブ）</a></div>' : '')
       + '<div style="display:flex;gap:6px;margin-top:8px">'
       + '<button class="btn btn-outline btn-sm" style="font-size:11px;padding:4px 10px" onclick="openEditLogModal(\'' + lid + '\')">変更</button>'
       + '<button class="btn btn-sm" style="font-size:11px;padding:4px 10px;background:#ffebee;color:#c62828;border:1px solid #ffcdd2" onclick="deleteLog(\'' + lid + '\')">削除</button>'
@@ -2489,8 +2514,9 @@ async function openEditLogModal(logId) {
     // 写真リンクの表示
     var photoArea = document.getElementById('editLogPhotoArea');
     var photoLink = document.getElementById('editLogPhotoLink');
-    if (log.photoUrl && photoArea && photoLink) {
-      photoLink.href = log.photoUrl;
+    var editPhotoHref = safeDriveUrl(log.photoUrl);
+    if (editPhotoHref && photoArea && photoLink) {
+      photoLink.href = editPhotoHref;
       photoArea.style.display = '';
     } else if (photoArea) {
       photoArea.style.display = 'none';
@@ -2543,7 +2569,7 @@ async function submitEditLog() {
   var pg = progressStart('変更を保存しています…');
   try {
     var updRes = await api('updateLog', null, body);
-    _alertCache = null; // 在庫変更のためアラートを再取得
+    invalidateAlertCache(); // 在庫変更のためアラートを再取得
     toast('✓ 記録を変更しました');
     closeModal('editLogModal');
     // 同梱データはlogs/prescriptionsそれぞれ個別にtry-catchされているため
@@ -2793,14 +2819,15 @@ function renderBulkStockList(patients) {
     html += '<div class="card" style="margin-top:10px">'
       + '<div style="font-weight:700;font-size:15px;color:var(--primary);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--gray-200)">'
       + '👤 ' + escapeHtml(pt.name)
-      + (pt.searchId ? ' <span style="font-size:12px;color:#9aa5b4;font-weight:400">(' + pt.searchId + ')</span>' : '')
+      + (pt.searchId ? ' <span style="font-size:12px;color:#9aa5b4;font-weight:400">(' + escHtml(pt.searchId) + ')</span>' : '')
       + '</div>';
 
     pt.prescriptions.forEach(function(rx) {
       var days = rx.daysUntilDepletion;
       var depColor = days === null ? '#9aa5b4' : days <= 7 ? '#c62828' : days <= 14 ? '#e65100' : '#2e7d32';
-      var depText  = days === null ? '計算不可' : '残' + days + '日（' + (rx.depletionDate || '-') + '）';
-      var rxid = escapeJs(rx.prescriptionId);
+      var depText  = days === null ? '計算不可' : '残' + days + '日（' + escHtml(rx.depletionDate || '-') + '）';
+      var rxid = escAttrJs(rx.prescriptionId);       // 属性内のJS文字列リテラル用
+      var rxidAttr = escHtml(rx.prescriptionId);    // 素の属性値(id=)用
       var cap  = rx.capacity || 1;
 
       html += '<div style="padding:8px 0;border-bottom:1px solid #f0f0f0">'
@@ -2817,15 +2844,15 @@ function renderBulkStockList(patients) {
         + '</div>'
         + '<div style="display:flex;align-items:center;gap:6px;flex-shrink:0">'
         + '<label style="font-size:12px;color:#9aa5b4;margin:0">確認本数</label>'
-        + '<input type="number" id="bulk-bottles-' + rxid + '" min="0" step="1" placeholder="本数"'
+        + '<input type="number" id="bulk-bottles-' + rxidAttr + '" min="0" step="1" placeholder="本数"'
         + ' style="width:72px;padding:6px 8px;font-size:15px;font-weight:700;text-align:center;border:2px solid var(--primary);border-radius:8px"'
-        + ' oninput="updateBulkDepPreview(\'' + rxid + '\',' + cap + ',' + rx.dailyAmount + ',\'' + rx.frequency + '\',' + rx.stock + ',' + (rx.expireDays || 9999) + ')">'
+        + ' oninput="updateBulkDepPreview(\'' + rxid + '\',' + cap + ',' + rx.dailyAmount + ',\'' + escAttrJs(rx.frequency) + '\',' + rx.stock + ',' + (rx.expireDays || 9999) + ')">'
         + '<span style="font-size:13px;font-weight:600">本</span>'
         + '</div>'
         + '</div>'
         // 枯渇日プレビュー
-        + '<div id="bulk-dep-' + rxid + '" style="font-size:12px;color:#1a6fbf;margin-top:4px;display:none">'
-        + '✅ 確認後の枯渇予定: <b id="bulk-dep-date-' + rxid + '">-</b>'
+        + '<div id="bulk-dep-' + rxidAttr + '" style="font-size:12px;color:#1a6fbf;margin-top:4px;display:none">'
+        + '✅ 確認後の枯渇予定: <b id="bulk-dep-date-' + rxidAttr + '">-</b>'
         + '</div>'
         + '</div>';
     });
@@ -2944,7 +2971,7 @@ function renderBulkHistoryList(groups) {
       + '<div style="display:flex;justify-content:space-between;align-items:center">'
       + '<div>'
       + '<div style="font-weight:700;font-size:15px">' + escapeHtml(g.dateKey) + photoIcon + '</div>'
-      + '<div style="font-size:12px;color:#9aa5b4;margin-top:2px">' + g.logCount + '件の処方を記録</div>'
+      + '<div style="font-size:12px;color:#9aa5b4;margin-top:2px">' + escHtml(g.logCount) + '件の処方を記録</div>'
       + '</div>'
       + '<span style="font-size:14px;color:var(--primary)">›</span>'
       + '</div>'
@@ -2964,11 +2991,10 @@ function openBulkHistoryDetail(groupIdx) {
 
 function renderBulkHistoryDetail(g, groupIdx) {
   var logs = g.logs;
-  console.log('renderBulkHistoryDetail logs:', JSON.stringify(logs.map(function(l){ return {logId:l.logId, prescriptionId:l.prescriptionId, patientName:l.patientName, medicineName:l.medicineName}; })));
 
   // 共通写真
-  var photoHtml = g.photoUrl
-    ? '<div style="margin-bottom:12px"><a href="' + g.photoUrl + '" target="_blank" rel="noopener"'
+  var photoHtml = safeDriveUrl(g.photoUrl)
+    ? '<div style="margin-bottom:12px"><a href="' + escHtml(safeDriveUrl(g.photoUrl)) + '" target="_blank" rel="noopener"'
       + ' style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#1a6fbf;background:#e3f2fd;border:1px solid #90caf9;padding:7px 14px;border-radius:8px;text-decoration:none">'
       + '📷 共通写真を開く（Googleドライブ）</a></div>'
     : '';
@@ -2991,17 +3017,18 @@ function renderBulkHistoryDetail(g, groupIdx) {
       + '👤 ' + escapeHtml(pt.name) + '</div>';
 
     pt.logs.forEach(function(l) {
-      var lid    = escapeJs(l.logId);
-      var prid   = escapeJs(l.prescriptionId);
-      var ldate  = escapeJs(l.date || '');
+      var lid    = escAttrJs(l.logId);              // 属性内のJS文字列リテラル用
+      var lidAttr = escHtml(l.logId);               // 素の属性値(id=)用
+      var prid   = escAttrJs(l.prescriptionId);
+      var ldate  = escAttrJs(l.date || '');
       var cap    = l.capacity || 1;
       var stockBottles = cap > 0 ? (l.stockAfter / cap).toFixed(1) : '-';
-      html += '<div id="bulk-hist-row-' + lid + '" style="background:#f5f7fa;border-radius:8px;padding:10px 12px;margin-bottom:8px">'
+      html += '<div id="bulk-hist-row-' + lidAttr + '" style="background:#f5f7fa;border-radius:8px;padding:10px 12px;margin-bottom:8px">'
         // 薬品名 + 在庫
         + '<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap">'
         + '<div>'
         + '<div style="font-size:13px;font-weight:600">' + escapeHtml(l.medicineName) + '</div>'
-        + '<div style="font-size:12px;color:#9aa5b4;margin-top:2px">確認在庫: <b>' + l.stockAfter.toFixed(1) + '単位</b>（' + stockBottles + '本）</div>'
+        + '<div style="font-size:12px;color:#9aa5b4;margin-top:2px">確認在庫: <b>' + l.stockAfter.toFixed(1) + '単位</b>（' + escHtml(stockBottles) + '本）</div>'
         + (l.memo ? '<div style="font-size:12px;color:#9aa5b4">備考: ' + escapeHtml(l.memo) + '</div>' : '')
         + '</div>'
         // 編集エリア（折り畳み）
@@ -3009,10 +3036,10 @@ function renderBulkHistoryDetail(g, groupIdx) {
         + ' onclick="toggleBulkHistEdit(\'' + lid + '\')">✏️ 修正</button>'
         + '</div>'
         // 編集フォーム（初期非表示）
-        + '<div id="bulk-hist-edit-' + lid + '" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #e8ecf0">'
+        + '<div id="bulk-hist-edit-' + lidAttr + '" style="display:none;margin-top:10px;padding-top:10px;border-top:1px solid #e8ecf0">'
         + '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;flex-wrap:wrap">'
         + '<label style="font-size:12px;color:#9aa5b4;margin:0">確認本数（修正）</label>'
-        + '<input type="number" id="bulk-hist-input-' + lid + '" min="0" step="0.5" value="' + stockBottles + '"'
+        + '<input type="number" id="bulk-hist-input-' + lidAttr + '" min="0" step="0.5" value="' + escHtml(stockBottles) + '"'
         + ' style="width:80px;padding:6px 8px;font-size:15px;font-weight:700;text-align:center;border:2px solid var(--primary);border-radius:8px">'
         + '<span style="font-size:13px">本</span>'
         + '</div>'
@@ -3040,19 +3067,18 @@ function toggleBulkHistEdit(logId) {
 }
 
 async function saveBulkHistEdit(logId, prescriptionId, capacity, date, groupIdx) {
-  console.log('saveBulkHistEdit called: logId=' + logId + ' prescriptionId=' + prescriptionId + ' capacity=' + capacity + ' date=' + date);
   var inp = document.getElementById('bulk-hist-input-' + logId);
-  if (!inp) { console.log('input not found for logId=' + logId); return; }
+  // 起こらない想定だが、入力欄が見つからないまま黙って抜けると原因が追えないため一言だけ残す。
+  // ログIDは出さない（ブラウザのログに業務データを残さない方針）。
+  if (!inp) { console.warn('残数の入力欄が見つかりません'); return; }
   var bottles = parseFloat(inp.value);
   if (isNaN(bottles) || bottles < 0) { toast('本数を正しく入力してください'); return; }
   var stockUnits = bottles * capacity;
-  console.log('stockUnits=' + stockUnits);
 
   try {
     // ログの在庫数を更新（GAS側で処方マスタも同時更新）
     var result = await api('updateLog', null, { logId: logId, stockAfter: stockUnits });
-    console.log('updateLog result:', JSON.stringify(result));
-    _alertCache = null; // 在庫変更のためアラートを再取得
+    invalidateAlertCache(); // 在庫変更のためアラートを再取得
     toast('✓ 保存しました');
     // グループを再読み込みして詳細を更新
     await refreshBulkHistoryDetail(groupIdx);
@@ -3075,6 +3101,20 @@ async function deleteBulkHistLog(logId, groupIdx) {
 async function refreshBulkHistoryDetail(groupIdx) {
   var hospitalId = document.getElementById('bulkHospitalId').value;
   if (!hospitalId) return;
+  // 履歴と在庫一覧は互いに独立なので同時に取りに行く。順番に待つと、
+  // 保存直後の再読み込みでサーバ往復が2回積み上がる。
+  // 在庫側(getBulkStockData)は全処方のログを日付順にリプレイするため重く、
+  // 直列だと履歴の待ち時間がそのまま上乗せされていた。
+  var needStock = !!window._bulkPatients;
+  var stockP = null;
+  if (needStock) {
+    // 履歴側が失敗したときに在庫側の失敗が未処理のまま残らないよう、
+    // ここで包んで結果を持ち帰る（成否を区別するため素の値では返さない）。
+    stockP = api('getBulkStockData', { hospitalId: hospitalId })
+      .then(function (v) { return { ok: true, value: v }; })
+      .catch(function (e) { return { ok: false, error: e }; });
+  }
+
   try {
     var groups = await api('getBulkLogHistory', { hospitalId: hospitalId });
     _bulkHistoryGroups = groups;
@@ -3087,12 +3127,25 @@ async function refreshBulkHistoryDetail(groupIdx) {
       openModal('bulkHistoryListModal');
       renderBulkHistoryList(groups);
     }
-    // 一括リスト（現在在庫表示）も更新
-    if (window._bulkPatients) {
-      var data = await api('getBulkStockData', { hospitalId: hospitalId });
-      renderBulkStockList(data);
-    }
   } catch(e) { console.warn(e); }
+
+  // 一括リスト（現在在庫表示）も更新。
+  // 描くかどうかは従来と同じく「今も一括リストを開いているか」で判断する
+  // （取得中に閉じられていたら描かない）。履歴側の失敗とは切り離し、
+  // 片方が落ちてももう片方の更新は行う。
+  if (stockP) {
+    // 描画自体の例外もここで吸収する。従来は取得と描画が同じtry/catchに入っており、
+    // この関数は呼び出し側へ例外を投げない前提で await されている（3086/3097付近）。
+    // 在庫の描画で落ちて呼び出し側の後続処理まで飛ばさない。
+    try {
+      var stock = await stockP;
+      if (!stock.ok) {
+        console.warn('一括在庫の再取得に失敗:', stock.error && stock.error.message);
+      } else if (window._bulkPatients) {
+        renderBulkStockList(stock.value);
+      }
+    } catch(e) { console.warn(e); }
+  }
 }
 
 async function submitBulkStock() {
@@ -3150,7 +3203,7 @@ async function submitBulkStock() {
 
     // 一括登録
     var result = await api('addBulkLogs', null, { logs: logs, photoUrl: photoUrl });
-    _alertCache = null; // 在庫変更のためアラートを再取得
+    invalidateAlertCache(); // 在庫変更のためアラートを再取得
     var ok = result.results ? result.results.filter(function(r){ return r.success; }).length : 0;
     var ng = result.results ? result.results.filter(function(r){ return !r.success; }).length : 0;
     toast('✓ ' + ok + '件登録完了' + (ng ? ' / ' + ng + '件失敗' : ''));
@@ -3196,7 +3249,7 @@ async function loadHospitals() {
     var sel2 = document.getElementById('planFilterHospital');
     hospitals.forEach(function(h) {
       var label = h.hospitalName + '（' + h.facilityName + '）';
-      sel2.innerHTML += '<option value="' + h.hospitalId + '">' + label + '</option>';
+      sel2.innerHTML += '<option value="' + escHtml(h.hospitalId) + '">' + escHtml(label) + '</option>';
     });
     hospitalsLoaded = true;
     // 一括残数ページの病院選択も初期化
@@ -3238,7 +3291,15 @@ async function calcVisit() {
   if (!hospitalId)    { toast('病院を選択してください');       return; }
   if (!visitDate)     { toast('往診日を入力してください');     return; }
   if (!nextVisitDate) { toast('次回往診日を入力してください'); return; }
+  // 早期案内のみ。サーバー側(calcVisitPrescription)の検証が正であり、
+  // ここでの判定は通信を1本節約するためのフロント側の補助に過ぎない。
+  // <input type="date">はyyyy-mm-dd固定のため文字列比較で暦日の前後判定ができる。
+  if (nextVisitDate <= visitDate) { toast('次回往診日は往診日より後の日付を指定してください'); return; }
 
+  // この要求専用の世代を発行する。連続してcalcVisitを実行した場合、後から
+  // 開始した要求が先に成功すると世代が進み、先に開始した要求の応答が
+  // (成功・失敗いずれも)遅れて届いても、既に表示中の新しい結果を上書きしない。
+  var myCalcGen = ++_visitCalcRequestGen;
   loading('visitResults');
   try {
     var result = await api('calcVisitPrescription', null, {
@@ -3246,8 +3307,10 @@ async function calcVisit() {
       visitDate: visitDate.replace(/-/g,'/'),
       nextVisitDate: nextVisitDate.replace(/-/g,'/')
     });
+    if (myCalcGen !== _visitCalcRequestGen) return; // 新しい計算要求が既に開始済み。古い成功応答は破棄
     renderVisitResults(result);
   } catch(e) {
+    if (myCalcGen !== _visitCalcRequestGen) return; // 同上。古い失敗応答で新しい画面を壊さない
     document.getElementById('visitResults').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
   }
 }
@@ -3262,21 +3325,26 @@ function renderVisitResults(result) {
   // 結果を保存（一括登録・PDF用）
   lastVisitResult = result;
   visitBottleOverrides = {};
-
-  // 往診予定を自動保存
-  api('addVisitPlan', null, { hospitalId: result.hospitalId, visitDate: result.visitDate, nextVisitDate: result.nextVisitDate }).catch(function(){});
+  // 新しい計算結果を表示するたび、結果世代を進める（fire-and-forgetの自動保存は廃止。
+  // 保存は下の「往診予定を保存（確定）」ボタンでのみ行う）。
+  // 【重要】_visitPlanSavingはここで無条件にfalseへ戻さない。保存中に新しい計算結果を
+  // 表示しても、進行中の保存処理(古い結果世代あて)はそのまま完了させ、その完了は
+  // setVisitPlanUi側の世代チェックで「今の画面には反映しない」よう扱う。
+  _visitPlanResultGen++;
 
   var html = '<div class="card" style="background:#e3f2fd;border:none;margin-top:12px">'
     + '<div style="font-size:13px;color:#1a6fbf">'
-    + '往診日: <b>' + result.visitDate + '</b>　'
-    + '次回: <b>' + result.nextVisitDate + '</b>　'
-    + '目標日: <b>' + result.targetDate + '</b>（次回往診日に安全在庫を確保）'
+    + '往診日: <b>' + escHtml(result.visitDate) + '</b>　'
+    + '次回: <b>' + escHtml(result.nextVisitDate) + '</b>　'
+    + '目標日: <b>' + escHtml(result.targetDate) + '</b>（次回往診日に安全在庫を確保）'
     + '</div>'
     + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap">'
     + '<button class="btn btn-outline btn-sm" onclick="visitPrintPDF()" style="flex:1;min-width:120px">🖨 PDF印刷</button>'
     + '<button class="btn btn-outline btn-sm" onclick="visitBulkEdit()" style="flex:1;min-width:120px">✏️ 本数変更</button>'
+    + '<button class="btn btn-primary btn-sm" id="visitPlanSaveBtn" onclick="saveVisitPlan()" style="flex:1;min-width:160px">📅 往診予定を保存（確定）</button>'
     + '<button class="btn btn-success btn-sm" id="visitBulkRegisterBtn" onclick="visitBulkRegister()" style="flex:1;min-width:120px">📋 一括登録</button>'
     + '</div>'
+    + '<div id="visitPlanSaveStatus" style="font-size:12px;color:#9aa5b4;margin-top:6px">未保存</div>'
     + '</div>';
 
   // 針の合計を患者ごとに集計
@@ -3286,7 +3354,7 @@ function renderVisitResults(result) {
     var totalNeedles = 0;
 
     var meds = pt.prescriptions.map(function(m) {
-      var warn = m.warning ? '<div style="font-size:11px;color:#e65100;margin-top:2px">&#9888; ' + m.warning + '</div>' : '';
+      var warn = m.warning ? '<div style="font-size:11px;color:#e65100;margin-top:2px">&#9888; ' + escHtml(m.warning) + '</div>' : '';
 
       // 現在の在庫状況（処方前）
       var depColor = '#9aa5b4';
@@ -3297,21 +3365,21 @@ function renderVisitResults(result) {
         else                              { depColor = '#2e7d32'; depLabel = 'あと' + m.currentDaysLeft + '日'; }
       }
       var currentDepStr = m.currentDepletionDate
-        ? '<span style="color:' + depColor + ';font-weight:700">' + m.currentDepletionDate + '（' + depLabel + '）</span>'
+        ? '<span style="color:' + depColor + ';font-weight:700">' + escHtml(m.currentDepletionDate) + '（' + depLabel + '）</span>'
         : '<span style="color:#c62828;font-weight:700">在庫切れ</span>';
 
       // 処方後の枯渇予定日（0本の場合は「処方なし（変化なし）」）
       var afterDepStr = (m.requiredBottles === 0)
         ? '<span style="color:#9aa5b4">処方なし（変化なし）</span>'
         : (m.depletionDateAfter
-          ? '<span style="color:#1a6fbf;font-weight:700">' + m.depletionDateAfter + '</span>'
+          ? '<span style="color:#1a6fbf;font-weight:700">' + escHtml(m.depletionDateAfter) + '</span>'
           : '-');
 
       // 薬品タイプ判定（注射フラグ）
       var isInjection = (m.medicineType === '注射' || m.medicineType === '注射薬');
 
       // 投与間隔・回数の計算
-      var freq = m.frequency || '';
+      var freq = escHtml(m.frequency || '');
       var onceAmount = parseFloat(m.dailyAmount) || 0; // 1回投与量
 
       var intervalDays = 1;
@@ -3348,23 +3416,24 @@ function renderVisitResults(result) {
           + '</div>';
       }
 
-      var pid = escapeJs(m.prescriptionId || '');
-      return '<div class="visit-med-row" data-prescriptionid="' + pid + '" style="flex-direction:column;align-items:stretch;gap:6px;padding:12px 14px">'
+      var pid = escAttrJs(m.prescriptionId || '');   // 属性内のJS文字列リテラル用
+      var pidAttr = escHtml(m.prescriptionId || ''); // 素の属性値(id= / data-)用
+      return '<div class="visit-med-row" data-prescriptionid="' + pidAttr + '" style="flex-direction:column;align-items:stretch;gap:6px;padding:12px 14px">'
         + '<div style="display:flex;align-items:center;gap:8px">'
         + '<div class="visit-med-name">'
-        + '<div style="font-weight:700">' + m.medicineName + (isInjection ? ' <span style="font-size:10px;background:#e3f2fd;color:#1a6fbf;padding:1px 5px;border-radius:4px">注射</span>' : '') + '</div>'
+        + '<div style="font-weight:700">' + escHtml(m.medicineName) + (isInjection ? ' <span style="font-size:10px;background:#e3f2fd;color:#1a6fbf;padding:1px 5px;border-radius:4px">注射</span>' : '') + '</div>'
         + '<div style="font-size:11px;color:#9aa5b4">'
         + freq + ' / <b style="color:#555">' + onceAmountStr + '</b> / <b style="color:#555">' + dailyUseStr + '</b> / <b style="color:#555">' + daysPerBottleStr + '</b>'
         + ' / 在庫: ' + parseFloat(m.currentStock).toFixed(3).replace(/\.?0+$/, '') + '単位'
-        + ' / 1本' + m.capacity + '単位'
-        + (m.expireDays < 999 ? ' / 開封後' + m.expireDays + '日' : '')
+        + ' / 1本' + escHtml(m.capacity) + '単位'
+        + (m.expireDays < 999 ? ' / 開封後' + escHtml(m.expireDays) + '日' : '')
         + '</div>'
         + '</div>'
-        + '<div class="visit-bottles" id="bottles-' + pid + '">' + m.requiredBottles + '<span>本</span></div>'
+        + '<div class="visit-bottles" id="bottles-' + pidAttr + '">' + m.requiredBottles + '<span>本</span></div>'
         + '</div>'
         + '<div style="background:#f5f7fa;border-radius:6px;padding:6px 10px;font-size:12px;display:flex;gap:12px;flex-wrap:wrap">'
         + '<div>📦 現在の在庫: ' + currentDepStr + 'まで</div>'
-        + '<div id="dep-after-' + pid + '">✅ 処方後: ' + afterDepStr + 'まで</div>'
+        + '<div id="dep-after-' + pidAttr + '">✅ 処方後: ' + afterDepStr + 'まで</div>'
         + '</div>'
         + needleInfo
         + warn
@@ -3383,8 +3452,8 @@ function renderVisitResults(result) {
       : '';
 
     html += '<div class="visit-patient-block">'
-      + '<div class="visit-patient-name" onclick="openPatientFromVisit(\'' + escapeJs(pt.patientId) + '\',\'' + escapeJs(pt.patientName) + '\')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">'
-      + '<span>' + pt.patientName + '</span>'
+      + '<div class="visit-patient-name" onclick="openPatientFromVisit(\'' + escAttrJs(pt.patientId) + '\')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">'
+      + '<span>' + escHtml(pt.patientName) + '</span>'
       + '<span style="font-size:12px;opacity:0.7">詳細 ›</span>'
       + '</div>'
       + meds
@@ -3393,7 +3462,128 @@ function renderVisitResults(result) {
   });
 
   el.innerHTML = html;
-  toast('✓ 計算完了・往診予定を保存しました');
+  // 新しいinnerHTMLで往診予定保存ボタン・状態表示は「未保存」で再生成されるはずだが、
+  // 明示的にも揃えておく（防御的リセット。テストハーネスでも検証可能にする目的も兼ねる）。
+  var vpStatusEl = document.getElementById('visitPlanSaveStatus');
+  if (vpStatusEl) vpStatusEl.textContent = '未保存';
+  var vpBtn = document.getElementById('visitPlanSaveBtn');
+  if (vpBtn) { vpBtn.disabled = false; vpBtn.textContent = '📅 往診予定を保存（確定）'; }
+  toast('✓ 計算完了');
+}
+
+// ============================================================
+// 往診予定の保存（明示的な確定操作。計算結果の表示だけでは保存しない）
+//
+// 保存中に新しい計算結果が描画されても、進行中の保存処理は開始時点の
+// 結果世代(gen)・hospitalId/visitDate/nextVisitDateを不変の保存コンテキスト
+// (ctx)としてスナップショットし、以降は一切lastVisitResultを再参照しない。
+// 応答が返った時点で「今表示している結果」と世代が一致する場合だけ、
+// 状態表示(ボタン・ステータス欄・トースト)を更新する(setVisitPlanUi参照)。
+// 一致しない場合は何も表示更新しない(書き込み自体は正しく完了している)。
+// ============================================================
+var SAVE_BTN_LABEL = '📅 往診予定を保存（確定）';
+
+// 世代が一致する場合だけ、往診予定保存ボタン・ステータス欄・トーストを更新する。
+// 一致しない場合は何もしない(古い保存処理の完了を、今の画面へ反映しない)。
+function setVisitPlanUi(gen, opts) {
+  opts = opts || {};
+  if (gen !== _visitPlanResultGen) return;
+  if (opts.toastMsg) toast(opts.toastMsg);
+  var btn = document.getElementById('visitPlanSaveBtn');
+  var statusEl = document.getElementById('visitPlanSaveStatus');
+  if (btn) {
+    if (opts.disabled !== undefined) btn.disabled = opts.disabled;
+    if (opts.btnText !== undefined) btn.textContent = opts.btnText;
+  }
+  if (statusEl && opts.status !== undefined) statusEl.textContent = opts.status;
+}
+
+// addVisitPlanへの1回の送信。conflictResを渡すとconfirmOverwrite付きの
+// 上書き確認リクエストになる。ctx(不変の保存コンテキスト)のみを参照し、
+// lastVisitResultには一切触れない。
+function requestSaveVisitPlan_(ctx, conflictRes) {
+  var body = { hospitalId: ctx.hospitalId, visitDate: ctx.visitDate, nextVisitDate: ctx.nextVisitDate };
+  if (conflictRes) {
+    body.confirmOverwrite = true;
+    body.expectedPlanId = conflictRes.planId;
+    body.expectedNextVisitDate = conflictRes.existingNextVisitDate;
+  }
+  return api('addVisitPlan', null, body);
+}
+
+function isVisitPlanSavedOutcome_(res) {
+  return !!(res && (res.outcome === 'created' || res.outcome === 'unchanged' || res.outcome === 'updated'));
+}
+
+async function saveVisitPlan() {
+  if (_visitPlanSaving) {
+    // 別の保存処理(古い結果世代あて含む)が進行中。安全のため二重に開始せず、
+    // その旨を案内するに留める(グローバルロックの二重書き込みを避ける設計と同じ考え方)。
+    toast('別の保存処理が進行中です。少し待ってから再度お試しください');
+    return;
+  }
+  if (!lastVisitResult) return;
+  _visitPlanSaving = true;
+
+  // 不変の保存コンテキスト。以降このctxのみを使い、lastVisitResultは再参照しない。
+  var ctx = {
+    gen: _visitPlanResultGen,
+    hospitalId: lastVisitResult.hospitalId,
+    visitDate: lastVisitResult.visitDate,
+    nextVisitDate: lastVisitResult.nextVisitDate,
+  };
+  setVisitPlanUi(ctx.gen, { disabled: true, status: '保存中…', btnText: '保存中...' });
+  var pg = progressStart('往診予定を保存しています…');
+  try {
+    var res = await requestSaveVisitPlan_(ctx, null);
+
+    if (isVisitPlanSavedOutcome_(res)) {
+      setVisitPlanUi(ctx.gen, { disabled: false, status: '✓ 保存済み', btnText: SAVE_BTN_LABEL, toastMsg: '✓ 往診予定を保存しました' });
+      return;
+    }
+
+    if (res.outcome === 'conflict') {
+      setVisitPlanUi(ctx.gen, { disabled: false, btnText: SAVE_BTN_LABEL });
+      var msg = '既に登録済みの往診予定があります。\n'
+        + '既存の次回往診日: ' + res.existingNextVisitDate + '\n'
+        + '今回の次回往診日: ' + ctx.nextVisitDate + '\n\n'
+        + 'この予定を新しい内容へ更新しますか？';
+      if (!confirm(msg)) {
+        // キャンセルは通信失敗ではない。自動更新せず、既存予定を維持したことのみ示す。
+        setVisitPlanUi(ctx.gen, { status: '既存の往診予定を維持しました（未保存）' });
+        return;
+      }
+
+      // 更新確認後の再送信。expectedPlanId/expectedNextVisitDateはctx側(元の競合応答res)
+      // から取る＝lastVisitResultが確認中に別結果へ切り替わっていても影響を受けない。
+      progressStep(pg, '往診予定を更新しています…');
+      var res2 = await requestSaveVisitPlan_(ctx, res);
+      if (isVisitPlanSavedOutcome_(res2)) {
+        setVisitPlanUi(ctx.gen, { disabled: false, status: '✓ 保存済み', btnText: SAVE_BTN_LABEL, toastMsg: '✓ 往診予定を更新しました' });
+      } else if (res2.outcome === 'conflict') {
+        // 確認中に既存予定の内容がさらに変わっていた。暗黙に更新せず、再度ユーザーへ委ねる。
+        progressFail(pg);
+        setVisitPlanUi(ctx.gen, {
+          disabled: false, status: '更新中に既存の予定が変わったため中止しました', btnText: SAVE_BTN_LABEL,
+          toastMsg: '往診予定の状態が変わっていたため更新を中止しました。もう一度お試しください',
+        });
+      } else {
+        progressFail(pg);
+        setVisitPlanUi(ctx.gen, { disabled: false, status: '更新できませんでした: ' + (res2.error || '不明なエラー'), btnText: SAVE_BTN_LABEL });
+      }
+      return;
+    }
+
+    // duplicate_exists 等、想定外のoutcome。安全側として保存扱いにしない。
+    progressFail(pg);
+    setVisitPlanUi(ctx.gen, { disabled: false, status: '保存できませんでした: ' + (res.error || '不明なエラー'), btnText: SAVE_BTN_LABEL });
+  } catch (e) {
+    progressFail(pg);
+    setVisitPlanUi(ctx.gen, { disabled: false, status: '保存に失敗しました', btnText: SAVE_BTN_LABEL, toastMsg: 'エラー: ' + e.message });
+  } finally {
+    progressEnd(pg);
+    _visitPlanSaving = false;
+  }
 }
 
 // ============================================================
@@ -3534,7 +3724,9 @@ async function visitBulkRegister() {
 function visitPrintPDF() {
   if (!lastVisitResult) return;
   var r = lastVisitResult;
-  var appUrl = location.href.split('?')[0];
+  // location.href にはフラグメント(#以降)が残る。この値を後段でインラインJavaScriptの
+  // 文字列リテラルへ入れるため、クエリだけでなくフラグメントも落としてから使う。
+  var appUrl = location.href.split('?')[0].split('#')[0];
   var qrParam = '?hospital=' + encodeURIComponent(r.hospitalId)
     + '&visitDate=' + encodeURIComponent(r.visitDate)
     + '&nextVisitDate=' + encodeURIComponent(r.nextVisitDate);
@@ -3558,7 +3750,7 @@ function visitPrintPDF() {
       var bottles = visitBottleOverrides[pid] !== undefined ? visitBottleOverrides[pid] : m.requiredBottles;
       var changed = visitBottleOverrides[pid] !== undefined && visitBottleOverrides[pid] !== m.requiredBottles;
       var isInjection = (m.medicineType === '注射' || m.medicineType === '注射薬');
-      var freq = m.frequency || '';
+      var freq = escHtml(m.frequency || '');
       var onceAmount = parseFloat(m.dailyAmount) || 0;
 
       var intervalDays = 1; var timesPerDay = 1;
@@ -3671,7 +3863,7 @@ function visitPrintPDF() {
 
   var win = window.open('', '_blank');
   win.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
-    + '<title>往診処方一覧 ' + r.visitDate + '</title>'
+    + '<title>往診処方一覧 ' + escHtml(r.visitDate) + '</title>'
     + '<style>'
     + 'body{font-family:"Hiragino Sans","Yu Gothic UI",sans-serif;font-size:10pt;margin:10mm 12mm;color:#222}'
     + 'h2{font-size:15pt;font-weight:700;margin:0 0 3px}'
@@ -3687,7 +3879,7 @@ function visitPrintPDF() {
     + '</style></head><body>'
     // アプリに戻るボタン（スマホで新規タブから戻れない問題対策。印刷時は非表示）
     + '<div style="margin-bottom:10px">'
-    +   '<button onclick="window.close();setTimeout(function(){location.href=\'' + appUrl + '\'},250)" '
+    +   '<button onclick="window.close();setTimeout(function(){location.href=\'' + escAttrJs(appUrl) + '\'},250)" '
     +     'style="padding:9px 20px;font-size:12pt;background:#fff;color:#1a6fbf;border:2px solid #1a6fbf;border-radius:6px;cursor:pointer">← アプリに戻る</button>'
     + '</div>'
     // ヘッダー
@@ -3696,9 +3888,9 @@ function visitPrintPDF() {
     +     '<h2>往診処方一覧</h2>'
     +     '<h3>' + escapeHtml(hospName) + '</h3>'
     +     '<div class="meta">'
-    +       '往診日: <b>' + r.visitDate + '</b>　'
-    +       '次回往診: <b>' + r.nextVisitDate + '</b>　'
-    +       '目標日: <b>' + r.targetDate + '</b>（次回往診日に安全在庫を確保）'
+    +       '往診日: <b>' + escHtml(r.visitDate) + '</b>　'
+    +       '次回往診: <b>' + escHtml(r.nextVisitDate) + '</b>　'
+    +       '目標日: <b>' + escHtml(r.targetDate) + '</b>（次回往診日に安全在庫を確保）'
     +     '</div>'
     +   '</div>'
     +   '<div class="qr-box">'
@@ -3742,7 +3934,7 @@ function renderVisitPlans(plans) {
   hospitals.forEach(function(h) { hospMap[h.hospitalId] = h.hospitalName + '（' + h.facilityName + '）'; });
   el.innerHTML = plans.map(function(p) {
     var hospLabel = escapeHtml(hospMap[p.hospitalId] || p.hospitalId);
-    var vd = escapeJs(p.visitDate); var nd = escapeJs(p.nextVisitDate); var hid = escapeJs(p.hospitalId);
+    var vd = escAttrJs(p.visitDate); var nd = escAttrJs(p.nextVisitDate); var hid = escAttrJs(p.hospitalId);
     return '<div class="card" style="margin-top:8px;cursor:pointer;transition:transform .1s" '
       + 'onclick="openVisitPlanDetail(\'' + hid + '\',\'' + vd + '\',\'' + nd + '\')" '
       + 'ontouchstart="this.style.transform=\'scale(.98)\'" ontouchend="this.style.transform=\'\'">'
@@ -3781,14 +3973,14 @@ function renderVisitPlanDetailResult(result) {
   }
 
   var html = '<div style="background:#e3f2fd;border-radius:8px;padding:10px 12px;margin-bottom:8px;font-size:13px;color:#1a6fbf">'
-    + '往診日: <b>' + result.visitDate + '</b>　次回: <b>' + result.nextVisitDate + '</b>　目標日: <b>' + result.targetDate + '</b>（次回往診日に安全在庫を確保）'
+    + '往診日: <b>' + escHtml(result.visitDate) + '</b>　次回: <b>' + escHtml(result.nextVisitDate) + '</b>　目標日: <b>' + escHtml(result.targetDate) + '</b>（次回往診日に安全在庫を確保）'
     + '</div>';
 
   result.patients.forEach(function(pt) {
     var totalNeedles = 0;
 
     var meds = (pt.prescriptions || []).map(function(m) {
-      var warn = m.warning ? '<div style="font-size:11px;color:#e65100;margin-top:2px">&#9888; ' + m.warning + '</div>' : '';
+      var warn = m.warning ? '<div style="font-size:11px;color:#e65100;margin-top:2px">&#9888; ' + escHtml(m.warning) + '</div>' : '';
 
       // 現在の在庫状況（処方前）
       var depColor = '#9aa5b4';
@@ -3799,16 +3991,16 @@ function renderVisitPlanDetailResult(result) {
         else                              { depColor = '#2e7d32'; depLabel = 'あと' + m.currentDaysLeft + '日'; }
       }
       var currentDepStr = m.currentDepletionDate
-        ? '<span style="color:' + depColor + ';font-weight:700">' + m.currentDepletionDate + '（' + depLabel + '）</span>'
+        ? '<span style="color:' + depColor + ';font-weight:700">' + escHtml(m.currentDepletionDate) + '（' + depLabel + '）</span>'
         : '<span style="color:#c62828;font-weight:700">在庫切れ</span>';
       var afterDepStr = (m.requiredBottles === 0)
         ? '<span style="color:#9aa5b4">処方なし（変化なし）</span>'
         : (m.depletionDateAfter
-          ? '<span style="color:#1a6fbf;font-weight:700">' + m.depletionDateAfter + '</span>'
+          ? '<span style="color:#1a6fbf;font-weight:700">' + escHtml(m.depletionDateAfter) + '</span>'
           : '-');
 
       var isInjection = (m.medicineType === '注射' || m.medicineType === '注射薬');
-      var freq = m.frequency || '';
+      var freq = escHtml(m.frequency || '');
       var onceAmount = parseFloat(m.dailyAmount) || 0;
 
       var intervalDays = 1; var timesPerDay = 1;
@@ -3843,12 +4035,12 @@ function renderVisitPlanDetailResult(result) {
       return '<div class="visit-med-row" style="flex-direction:column;align-items:stretch;gap:6px;padding:12px 14px">'
         + '<div style="display:flex;align-items:center;gap:8px">'
         + '<div class="visit-med-name">'
-        + '<div style="font-weight:700">' + m.medicineName + (isInjection ? ' <span style="font-size:10px;background:#e3f2fd;color:#1a6fbf;padding:1px 5px;border-radius:4px">注射</span>' : '') + '</div>'
+        + '<div style="font-weight:700">' + escHtml(m.medicineName) + (isInjection ? ' <span style="font-size:10px;background:#e3f2fd;color:#1a6fbf;padding:1px 5px;border-radius:4px">注射</span>' : '') + '</div>'
         + '<div style="font-size:11px;color:#9aa5b4">'
         + freq + ' / <b style="color:#555">' + onceAmountStr + '</b> / <b style="color:#555">' + dailyUseStr + '</b> / <b style="color:#555">' + daysPerBottleStr + '</b>'
         + ' / 在庫: ' + parseFloat(m.currentStock).toFixed(3).replace(/\.?0+$/, '') + '単位'
-        + ' / 1本' + m.capacity + '単位'
-        + (m.expireDays < 999 ? ' / 開封後' + m.expireDays + '日' : '')
+        + ' / 1本' + escHtml(m.capacity) + '単位'
+        + (m.expireDays < 999 ? ' / 開封後' + escHtml(m.expireDays) + '日' : '')
         + '</div>'
         + '</div>'
         + '<div class="visit-bottles">' + m.requiredBottles + '<span>本</span></div>'
@@ -3873,7 +4065,7 @@ function renderVisitPlanDetailResult(result) {
       : '';
 
     html += '<div class="visit-patient-block">'
-      + '<div class="visit-patient-name" onclick="closeModal(\'visitPlanDetailModal\');openPatient(\'' + escapeJs(pt.patientId) + '\')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">'
+      + '<div class="visit-patient-name" onclick="closeModal(\'visitPlanDetailModal\');openPatient(\'' + escAttrJs(pt.patientId) + '\')" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center">'
       + '<span>' + escapeHtml(pt.patientName) + '</span>'
       + '<span style="font-size:12px;opacity:0.7">詳細 ›</span>'
       + '</div>'
@@ -4054,7 +4246,7 @@ function renderMasterList(type, data, query) {
 function makeMasterCard(type, r, labelFn) {
   var label = labelFn(r);
   var id = r[getMasterIdKey(type)];
-  return '<div class="card" style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="openEditMasterModal(\'' + type + '\',\'' + escapeJs(String(id)) + '\')">'
+  return '<div class="card" style="margin-top:6px;display:flex;justify-content:space-between;align-items:center;cursor:pointer" onclick="openEditMasterModal(\'' + type + '\',\'' + escAttrJs(String(id)) + '\')">'
     + '<div style="font-size:14px;flex:1">' + escapeHtml(label) + '</div>'
     + '<div style="font-size:18px;color:var(--gray-400);margin-left:8px">&#9998;</div>'
     + '</div>';
@@ -4065,8 +4257,20 @@ function getMasterIdKey(type) {
   return keys[type] || 'ID';
 }
 
-function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-function escapeJs(s)   { return String(s).replace(/\\/g,'\\\\').replace(/'/g,"\\'"); }
+// 二重引用符も実体参照化する。属性値へ入れる用途があるため、これが無いと属性から脱出できる。
+function escapeHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+// JavaScript文字列リテラルの中身としての無害化。改行と行区切り(U+2028/U+2029)は
+// JSの文法上そのままでは文字列を終端させてしまうためエスケープする。
+function escapeJs(s)   {
+  return String(s)
+    .replace(/\\/g,'\\\\').replace(/'/g,"\\'")
+    .replace(/\r/g,'\\r').replace(/\n/g,'\\n')
+    .replace(/\u2028/g,'\\u2028').replace(/\u2029/g,'\\u2029');
+}
+// HTML属性の中のJavaScript文字列へ値を入れるときに使う。文脈が二重なので変換も二重に要る。
+// 内側=JS文字列としての無害化、外側=HTML属性としての無害化。この順でなければならない
+// （ブラウザは先にHTMLを復号し、そのあとJSとして解釈するため）。
+function escAttrJs(s)  { return escHtml(escapeJs(s)); }
 
 // ============================================================
 // 検索付きセレクト共通コンポーネント
@@ -4195,7 +4399,7 @@ async function renderMasterFields(type, record) {
     var f = def.fields[i];
     var val = record ? (record[f.key] !== undefined ? record[f.key] : '') : '';
     var isReadonly = f.readonly === 'always' || (f.readonly === 'edit' && record);
-    html += '<div class="form-group"><label>' + f.label + (f.required ? ' *' : '') + '</label>';
+    html += '<div class="form-group"><label>' + escHtml(f.label) + (f.required ? ' *' : '') + '</label>';
 
     if (isReadonly) {
       var displayVal = f.readonly === 'always' && !record ? '（保存時に自動発行）' : escapeHtml(String(val));
@@ -4222,6 +4426,17 @@ async function renderMasterFields(type, record) {
 
   // optionSource付きフィールドに検索セレクトを初期化
   var containers = document.querySelectorAll('[data-ss-source]');
+
+  // 選択肢の取得をまとめて先に始める。1つずつ待つとフィールドの数だけ
+  // サーバ往復が積み上がる（処方マスタは患者・薬品・病院の3種類＝3往復）。
+  // 全部揃ってから組み立てる点にも意味があり、rowLabel は他の種類のキャッシュを
+  // 参照することがあるため、1つずつ待つ形では先のフィールドだけ名前が解決できなかった。
+  var srcList = [];
+  for (var si = 0; si < containers.length; si++) {
+    srcList.push(containers[si].dataset.ssSource);
+  }
+  var srcDataBySource = await loadMasterOptionSources(srcList);
+
   for (var ci = 0; ci < containers.length; ci++) {
     var container = containers[ci];
     var source  = container.dataset.ssSource;
@@ -4231,7 +4446,7 @@ async function renderMasterFields(type, record) {
     // containerにIDを与えてcreateSearchSelectを呼ぶ
     container.id = fieldId + '_ss';
     try {
-      var srcData2 = masterCache[source] || await loadMasterForSelect(source);
+      var srcData2 = srcDataBySource[source] || [];
       var srcDef2  = MASTER_DEF[source];
       var srcIdKey2 = getMasterIdKey(source);
       var opts2 = srcData2.map(function(s) {
@@ -4242,6 +4457,29 @@ async function renderMasterFields(type, record) {
       container.innerHTML = '<div style="color:red;font-size:13px">読み込み失敗</div>';
     }
   }
+}
+
+// 検索セレクトに要る種類の選択肢を、まとめて並行に取る。
+// 直列に取ると入力モーダルを開くまでの待ち時間が種類の数だけ積み上がる。
+// - 同じ種類を複数のフィールドが使う場合は1回にまとめる
+// - 既に masterCache にある種類は取りに行かない
+// - 取得できなかった種類は空配列になる（loadMasterForSelect の既存の挙動をそのまま使う。
+//   1種類の失敗で他のフィールドまで空にしない）
+async function loadMasterOptionSources(sources) {
+  var list = sources || [];
+  var need = [];
+  list.forEach(function (src) {
+    if (!src) return;
+    if (need.indexOf(src) >= 0) return;
+    if (masterCache[src]) return;
+    need.push(src);
+  });
+  await Promise.all(need.map(function (src) { return loadMasterForSelect(src); }));
+  var out = {};
+  list.forEach(function (src) {
+    if (src) out[src] = masterCache[src] || [];
+  });
+  return out;
 }
 
 async function loadMasterForSelect(type) {
@@ -4255,7 +4493,8 @@ async function loadMasterForSelect(type) {
 async function saveMaster() {
   if (_masterSaving) return;
   // 患者マスタを変更した場合は全患者キャッシュをクリア
-  if (currentMasterTab === 'patient') _allPatients = [];
+  // 患者一覧のクライアントキャッシュは持たない（検索は都度サーバへ問い合わせる）ので、
+  // ここでの無効化は不要。マスタ一覧のキャッシュは下で個別に破棄する。
   var def    = MASTER_DEF[currentMasterTab];
   var idKey  = getMasterIdKey(currentMasterTab);
   var record = {};
@@ -4324,6 +4563,9 @@ async function deleteMasterRow() {
   var id    = currentMasterRecord[idKey];
   if (!confirm('「' + MASTER_DEF[currentMasterTab].rowLabel(currentMasterRecord, masterCache) + '」を削除しますか？\n※この操作は元に戻せません')) return;
   _masterDeleting = true;
+  // 患者を削除したら検索キャッシュも落とす。落とさないと削除済みの患者が検索に出続ける。
+  // 患者一覧のクライアントキャッシュは持たない（検索は都度サーバへ問い合わせる）ので、
+  // ここでの無効化は不要。マスタ一覧のキャッシュは下で個別に破棄する。
   var pg = progressStart('削除しています…');
   try {
     var delMstRes = await api('deleteMaster', null, { type: currentMasterTab, id: id, returnMasters: true });
