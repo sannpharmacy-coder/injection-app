@@ -1237,8 +1237,23 @@ const ALERT_AFFECTING_ACTIONS = {
 const COMM_LOG_KEY = 'commLog_v1';
 const COMM_LOG_MAX = 30;
 
+// 通信ログのエラー文から業務データらしい並びを落とす。
+// エラー文はサーバーが組み立てるため（例: 「処方IDが見つかりません: <id>」）、
+// 端末のlocalStorageにIDや生年月日コードが残り続ける。
+// 消してしまうと切り分けの決め手を失う（2026-08-19の404はこのログで原因が分かった）ので、
+// action名・所要ms・HTTPステータスは残し、識別子になる並びだけ伏せる。
+//   - 8桁以上の16進: generateId()（UUIDから8桁）やUUIDそのもの
+//   - 4桁以上の連続数字: 生年月日コード(例 350101)・行番号・日付の数字並び
+// 3桁以下は残す（404などのステータスを読めなくしないため）。
+function _scrubForLog(text) {
+  return String(text == null ? '' : text)
+    .replace(/\b[0-9a-f]{8,}\b/gi, '<ID>')
+    .replace(/\d{4,}/g, '<数字>');
+}
+
 function _commLogAppend(entry) {
   try {
+    if (entry && entry.error) entry.error = _scrubForLog(entry.error);
     var raw = localStorage.getItem(COMM_LOG_KEY);
     var list = raw ? JSON.parse(raw) : [];
     list.push(entry);
@@ -1277,11 +1292,57 @@ function renderCommLog() {
   }).join('');
 }
 
+// 通信の同時本数の上限。
+// 2026-08-19の実測: 検索が打鍵ごとに飛び、2秒間に6本が重なった。サーバー側は
+// 各1〜5秒で完了していたのに、後ろに並んだ患者詳細の取得はアプリ側で214秒
+// 待たされ、Googleの応答転送先が期限切れになって404で落ちた。
+// 相手は1本ずつしか速くならないので、投げる本数を抑える方が全体は速い。
+// 3本にしているのは、患者詳細（2本並行）と入力モーダルの選択肢取得（最大3本）を
+// そのまま通しつつ、それ以上の重なりを列に回すため。
+// 1本にすると希に起きるGAS側の長時間実行1件で全体が止まる。
+var API_MAX_INFLIGHT = 3;
+var _apiInflight = 0;
+var _apiWaiting = [];
+
+// 枠が空いていれば null を返す。呼び出し側はその場合 await しないので、
+// 通信は従来と同じtickで出る（await を挟むと、応答を待つ側の書き方によって
+// 「まだfetchが呼ばれていない」瞬間が生まれ、既存の挙動が変わる）。
+function _acquireApiSlot() {
+  if (_apiInflight < API_MAX_INFLIGHT) {
+    _apiInflight++;
+    return null;
+  }
+  return new Promise(function (resolve) { _apiWaiting.push(resolve); });
+}
+
+function _releaseApiSlot() {
+  var next = _apiWaiting.shift();
+  // 空いた枠は減らさずに次へ渡す。ここで減らしてから増やすと、
+  // 間に入った呼び出しが上限を超えて走る。
+  if (next) { next(); return; }
+  _apiInflight--;
+}
+
+// 枠を取ってから実際の通信を行う。枠は通信中だけ握る（呼び出し側の処理中は握らない）。
+async function _apiRequestQueued(action, params, body) {
+  var wait = _acquireApiSlot();
+  if (wait) await wait;
+  try {
+    return await _apiRequest(action, params, body);
+  } finally {
+    _releaseApiSlot();
+  }
+}
+
+// 長く待たされた末の失敗は、混雑が原因のことが多い。
+// そこで再試行すると列をさらに伸ばして事態を悪くするため、時間で線を引く。
+var RETRY_MAX_ELAPSED_MS = 15000;
+
 async function api(action, params, body) {
   var t0 = Date.now();
   var isWrite = !!WRITE_ACTIONS_FRONT[action];
   try {
-    var data = await _apiRequest(action, params, body);
+    var data = await _apiRequestQueued(action, params, body);
     _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true });
     // 在庫・処方・マスタを変えたらアラートは作り直す。
     // 世代も進むので、飛んでいる途中の古い取得が後から書き戻すこともない。
@@ -1293,9 +1354,9 @@ async function api(action, params, body) {
     // 返した業務エラー(data.error)はe.noRetry=trueが付き、対象外になる
     // （_apiRequest参照。再試行しても同じ結果を返すだけで、ロック待ち直列化のある
     // 書き込み系はもちろん、読み取り系でも無駄な二重リクエストになるだけのため）。
-    if (!isWrite && !e.noRetry) {
+    if (!isWrite && !e.noRetry && (Date.now() - t0) < RETRY_MAX_ELAPSED_MS) {
       try {
-        var data2 = await _apiRequest(action, params, body);
+        var data2 = await _apiRequestQueued(action, params, body);
         _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true, retried: true });
         return data2;
       } catch (e2) {
@@ -1622,9 +1683,12 @@ function pad(n) { return String(n).padStart(2, '0'); }
 // ============================================================
 var searchTimer = null;
 // 入力から検索を投げるまでの待ち時間。打鍵ごとに投げないためのもの。
-// 従来の400msは体感の遅さに直結していたので短くする。
-// 患者検索が読むのは患者・病院・施設のマスタ3枚だけで、在庫計算は伴わない。
-var SEARCH_DEBOUNCE_MS = 150;
+// 150msへ短縮したところ、実運用で1文字ごとに1本投げる形になった
+// （人の打鍵間隔は200〜300msなので、毎打鍵が「入力が止まった」と判定される）。
+// 6文字で6本、ブラウザの同時接続上限で順番待ちが生まれ、後ろに並んだ
+// 患者詳細の取得が214秒待たされて404になった（2026-08-19実測）。
+// サーバー側は各1〜5秒で完了していた＝遅さの正体はこの待ち行列。
+var SEARCH_DEBOUNCE_MS = 400;
 
 // 検索の世代。応答が返る順番は問い合わせた順番と一致しない。
 // 番号を照合せずに描画すると、後から返った古い応答が新しい結果を上書きし、
@@ -1712,7 +1776,32 @@ async function initApp() {
   }
 }
 
+// 検索は同時に1本だけ投げる。
+// debounceを400msに戻しても、打ち直しが続けば重なる余地は残る。
+// 飛んでしまった通信は止められない（世代番号は応答を捨てるだけ）ので、
+// 「1本返るまで次を投げない」形にして重なり自体を作らない。
+// 待っている間に入力が変わった分は最後の1件だけを覚え、途中は捨てる。
+var _searchInFlight = false;
+var _searchPending = null;
+
 async function doSearch(q) {
+  if (_searchInFlight) {
+    _searchPending = q;
+    return;
+  }
+  _searchInFlight = true;
+  try {
+    await _doSearchOnce(q);
+  } finally {
+    _searchInFlight = false;
+    var next = _searchPending;
+    _searchPending = null;
+    // 同じ語なら投げ直さない（結果は今描いたものと同じになる）。
+    if (next !== null && next !== q) doSearch(next);
+  }
+}
+
+async function _doSearchOnce(q) {
   var gen = ++_searchGen;
   loading('searchResults');
   try {
