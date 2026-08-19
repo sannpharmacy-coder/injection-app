@@ -971,13 +971,27 @@ function initAlertThresholdInputs() {
 // ============================================================
 // 往診の必要本数 設定（全端末共通・Script Properties / GAS API経由）
 // ============================================================
+// 起動時の getInit が settings.visitBufferDays を返すので、設定画面を開くたびに
+// getSettings を投げ直す必要はない。この1往復が実測1.3〜1.9秒かかっていた
+// （サーバー側の処理は速く、ほぼGASのリクエスト固定費と回線。2026-08-19実測）。
+// 取得済みかどうかを覚えておき、取れていない時だけ聞く。
+var _visitBufferDaysLoaded = false;
+
 async function loadVisitSettings() {
   var inp = document.getElementById('settingsVisitBufferDays');
   if (!inp) return;
+  if (_visitBufferDaysLoaded) {
+    inp.value = _visitBufferDays;
+    return;
+  }
   try {
     var s = await api('getSettings');
-    if (s && s.visitBufferDays) { inp.value = s.visitBufferDays; _visitBufferDays = s.visitBufferDays; }
-  } catch (e) { /* 取得失敗時は既定値のまま */ }
+    if (s && s.visitBufferDays) {
+      inp.value = s.visitBufferDays;
+      _visitBufferDays = s.visitBufferDays;
+      _visitBufferDaysLoaded = true;
+    }
+  } catch (e) { /* 取得失敗時は既定値のまま。次に開いたときにもう一度聞く */ }
 }
 
 // 受取プレビュー用に安全在庫日数（往診設定）を返す。DOM入力→キャッシュ→既定14の順。
@@ -996,7 +1010,11 @@ async function saveVisitSettings() {
   try {
     var res = await api('setSettings', null, { visitBufferDays: n });
     if (res && res.error) { toast('保存失敗: ' + res.error); return; }
-    if (res && res.visitBufferDays) inp.value = res.visitBufferDays;
+    if (res && res.visitBufferDays) {
+      inp.value = res.visitBufferDays;
+      _visitBufferDays = res.visitBufferDays;   // 保存した値を手元にも反映する
+      _visitBufferDaysLoaded = true;
+    }
     var msg = document.getElementById('visitSettingsSaved');
     if (msg) { msg.style.display = 'inline'; setTimeout(function(){ msg.style.display = 'none'; }, 2000); }
     toast('往診の在庫日数を保存しました ✓');
@@ -1754,6 +1772,7 @@ async function initApp() {
     }
     if (init.settings && init.settings.visitBufferDays) {
       _visitBufferDays = init.settings.visitBufferDays;
+      _visitBufferDaysLoaded = true;   // 設定画面を開いたときの往復を省くため
       var inp = document.getElementById('settingsVisitBufferDays');
       if (inp) inp.value = init.settings.visitBufferDays;
     }
