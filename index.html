@@ -701,7 +701,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
         <div id="addRxDailyCountHint" style="font-size:11px;color:#1a6fbf;margin-top:3px"></div>
       </div>
       <div class="form-group">
-        <label>1回使用量（単位） *</label>
+        <label>1日使用量（単位・空打ち含む） *</label>
         <input type="number" id="addRxAmount" min="0" step="0.1" placeholder="例：6">
       </div>
       <div class="form-group">
@@ -2842,7 +2842,7 @@ async function submitAddPrescription() {
   var date        = document.getElementById('addRxDate').value;
   var memo        = document.getElementById('addRxMemo').value;
   if (!medicineId) { toast('薬品を選択してください'); return; }
-  if (!amount || isNaN(amount)) { toast('1回使用量を入力してください'); return; }
+  if (!amount || isNaN(amount)) { toast('1日使用量を入力してください'); return; }
   _addRxSubmitting = true;
   var pg = progressStart('処方を追加しています…');
   try {
@@ -4247,7 +4247,7 @@ var MASTER_DEF = {
       { key: '薬品ID',      label: '薬品',         type: 'select', required: true,  optionSource: 'medicine' },
       { key: '病院ID',      label: '病院',         type: 'select', required: true,  optionSource: 'hospital' },
       { key: '確定在庫_単位', label: '現在在庫（単位）', type: 'number', required: false },
-      { key: '1日使用量',   label: '1回使用量（単位）', type: 'number', required: false },
+      { key: '1日使用量',   label: '1日使用量（単位・空打ち含む）', type: 'number', required: false },
       { key: '使用頻度',    label: '使用頻度',     type: 'select', required: false, options: ['毎日','週2回','週1回','月1回'] },
       { key: 'ステータス',  label: 'ステータス',   type: 'select', required: false, options: ['使用中','中止'] },
       { key: '処方開始日',  label: '処方開始日',   type: 'text',   required: false },
