@@ -677,7 +677,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 <div class="modal-overlay" id="setupDsModal">
   <div class="modal" style="max-height:90vh;display:flex;flex-direction:column">
     <div class="modal-title" style="flex-shrink:0">
-      <span>用量スケジュールを設定</span>
+      <span>用法用量を設定</span>
       <button onclick="closeModal('setupDsModal')">&#215;</button>
     </div>
     <div style="overflow-y:auto;flex:1">
@@ -1178,7 +1178,7 @@ async function submitSetupDs() {
       res = await api('addLog', null, { prescriptionId: pid, action: '用量変更', date: todayStr(), memo: '用量スケジュール設定',
         newSchedule: ds.schedule, returnPrescriptions: true });
     }
-    toast('✓ 用量スケジュールを保存しました');
+    toast('✓ 用法用量を保存しました');
     closeModal('setupDsModal');
     if (res && res.prescriptions) {
       renderPatientDetail(currentPatient, res.prescriptions);
@@ -2323,11 +2323,11 @@ function renderRxCard(p, stopped) {
       schedStale = !ps.ok || Math.abs(calcScheduleDaily(ps.doses, parseFloat(p.primingUnits) || 0).dailyAmountMax - (parseFloat(p.dailyAmount) || 0)) > 0.001;
     }
     if (!p.schedule) {
-      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法</span><span><a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="color:var(--warning);font-weight:600">スケジュール未設定 → 設定する</a></span></div>';
+      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法用量</span><span><a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="color:var(--warning);font-weight:600">用法用量未設定 → 設定する</a></span></div>';
     } else if (schedStale) {
-      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法</span><span><span style="color:var(--gray-400);text-decoration:line-through">' + escHtml(p.schedule) + '</span> <a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="color:var(--warning);font-weight:600">現在値と不一致 → 再設定する</a></span></div>';
+      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法用量</span><span><span style="color:var(--gray-400);text-decoration:line-through">' + escHtml(p.schedule) + '</span> <a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="color:var(--warning);font-weight:600">現在値と不一致 → 再設定する</a></span></div>';
     } else {
-      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法</span><span>' + escHtml(p.schedule) + (p.primingUnits ? '（空打ち' + escHtml(p.primingUnits) + '）' : '') + ' <a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="font-size:11px;margin-left:4px">変更</a></span></div>';
+      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法用量</span><span>' + escHtml(p.schedule) + (p.primingUnits ? '（空打ち' + escHtml(p.primingUnits) + '）' : '') + ' <a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="font-size:11px;margin-left:4px">変更</a></span></div>';
     }
   }
   var actions = stopped
@@ -2540,9 +2540,10 @@ function openLogModal(prescriptionId, action, medicineName, capacity, curDailyAm
   if (action === '用量変更') {
     document.getElementById('logNewDailyAmount').value = curDailyAmount || '';
     document.getElementById('logNewDailyCount').value  = curDailyCount  || '';
-    // 保存済みスケジュールが現在値と一致すればスケジュールモード、それ以外は手入力モードで開く
+    // 各回の用量入力を既定で開く（保存済みが一致すればその値、無ければ現在の1日回数ぶんの空枠。手入力へは切替可）
     dsInit('logNew', { countId: 'logNewDailyCount', amountId: 'logNewDailyAmount', toggleId: 'logNewDsToggle',
-      schedule: curSchedule || '', dailyAmount: curDailyAmount, dailyCount: curDailyCount, priming: primingUnits, frequency: curFrequency });
+      schedule: curSchedule || '', dailyAmount: curDailyAmount, dailyCount: curDailyCount, priming: primingUnits, frequency: curFrequency,
+      defaultMode: 'schedule', prefillSingle: true });
   } else {
     document.getElementById('logNewDailyAmount').value = '';
     document.getElementById('logNewDailyCount').value  = '';
