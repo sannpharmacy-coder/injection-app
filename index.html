@@ -640,12 +640,13 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
     </div>
     <div id="logSection-用量変更" style="display:none">
       <div class="form-group">
-        <label>新しい1日使用量（単位）</label>
-        <input type="number" id="logNewDailyAmount" min="0" step="0.1" placeholder="例：12">
-      </div>
-      <div class="form-group">
         <label>新しい1日回数</label>
-        <input type="number" id="logNewDailyCount" min="1" step="1" placeholder="例：2">
+        <input type="number" id="logNewDailyCount" min="1" max="12" step="1" placeholder="例：2" oninput="dsOnCountChange('logNew')">
+      </div>
+      <div id="logNewDoseSchedule"></div>
+      <div class="form-group">
+        <label>新しい1日使用量（単位・空打ち含む） <a href="#" id="logNewDsToggle" onclick="dsToggleMode('logNew');return false" style="font-weight:400;font-size:12px;margin-left:8px"></a></label>
+        <input type="number" id="logNewDailyAmount" min="0" step="0.1" placeholder="例：12">
       </div>
     </div>
     <div class="form-group">
@@ -672,6 +673,34 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
   </div>
 </div>
 
+<!-- 用量スケジュール設定モーダル（従来処方の切り替え用） -->
+<div class="modal-overlay" id="setupDsModal">
+  <div class="modal" style="max-height:90vh;display:flex;flex-direction:column">
+    <div class="modal-title" style="flex-shrink:0">
+      <span>用量スケジュールを設定</span>
+      <button onclick="closeModal('setupDsModal')">&#215;</button>
+    </div>
+    <div style="overflow-y:auto;flex:1">
+      <div style="font-size:13px;color:#9aa5b4;margin-bottom:4px"><b id="setupDsMedName"></b></div>
+      <div style="font-size:12px;margin-bottom:8px">現在の1日使用量: <b id="setupDsCurrent"></b> 単位/日（空打ち含む）</div>
+      <input type="hidden" id="setupDsPid">
+      <div class="form-group">
+        <label>1日回数</label>
+        <input type="number" id="setupDailyCount" min="1" max="12" step="1" oninput="dsOnCountChange('setup')">
+      </div>
+      <div id="setupDoseSchedule"></div>
+      <div class="form-group">
+        <label>1日使用量（単位・空打ち含む）</label>
+        <input type="number" id="setupAmount" readonly>
+      </div>
+      <div style="font-size:11px;color:#9aa5b4">計算値が現在の1日使用量と同じならそのまま保存します。違う場合は確認のうえ「用量変更」として記録します。</div>
+    </div>
+    <div style="padding:12px 0 0;flex-shrink:0">
+      <button class="btn btn-primary btn-full" onclick="submitSetupDs()">保存する</button>
+    </div>
+  </div>
+</div>
+
 <!-- 処方追加モーダル -->
 <div class="modal-overlay" id="addRxModal">
   <div class="modal" style="max-height:90vh;display:flex;flex-direction:column">
@@ -687,7 +716,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       </div>
       <div class="form-group">
         <label>使用頻度 *</label>
-        <select id="addRxFreq">
+        <select id="addRxFreq" onchange="dsSetFrequency('addRx', this.value)">
           <option value="毎日">毎日</option>
           <option value="週2回">週2回</option>
           <option value="週1回">週1回</option>
@@ -697,11 +726,12 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       </div>
       <div class="form-group">
         <label>1日回数 *</label>
-        <input type="number" id="addRxDailyCount" min="1" step="1" value="1" placeholder="例：2">
+        <input type="number" id="addRxDailyCount" min="1" max="12" step="1" value="1" placeholder="例：2" oninput="dsOnCountChange('addRx')">
         <div id="addRxDailyCountHint" style="font-size:11px;color:#1a6fbf;margin-top:3px"></div>
       </div>
+      <div id="addRxDoseSchedule"></div>
       <div class="form-group">
-        <label>1日使用量（単位・空打ち含む） *</label>
+        <label>1日使用量（単位・空打ち含む） * <a href="#" id="addRxDsToggle" onclick="dsToggleMode('addRx');return false" style="font-weight:400;font-size:12px;margin-left:8px"></a></label>
         <input type="number" id="addRxAmount" min="0" step="0.1" placeholder="例：6">
       </div>
       <div class="form-group">
@@ -759,12 +789,13 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
     <!-- 用量変更セクション -->
     <div id="editLogSection-用量変更" style="display:none">
       <div class="form-group">
-        <label>変更後使用量（単位/回）</label>
-        <input type="number" id="editLogDailyAmount" min="0" step="0.1" placeholder="例：21">
-      </div>
-      <div class="form-group">
         <label>変更後1日回数</label>
-        <input type="number" id="editLogDailyCount" min="1" step="1" placeholder="例：2">
+        <input type="number" id="editLogDailyCount" min="1" max="12" step="1" placeholder="例：2" oninput="dsOnCountChange('editLog')">
+      </div>
+      <div id="editLogDoseSchedule"></div>
+      <div class="form-group">
+        <label>変更後1日使用量（単位・空打ち含む） <a href="#" id="editLogDsToggle" onclick="dsToggleMode('editLog');return false" style="font-weight:400;font-size:12px;margin-left:8px"></a></label>
+        <input type="number" id="editLogDailyAmount" min="0" step="0.1" placeholder="例：21">
       </div>
     </div>
     <div class="form-group">
@@ -861,6 +892,309 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 <div id="toast"></div>
 
 <script>
+// @shared-begin doseSchedule
+// 用量スケジュール（例 "2-4-2" / "2~4-0~2-2~4"）の解析と、1日使用量・針の計算。
+// gas-backend/コード.js と index.html に同一のコピーを置く（npm test が完全一致と挙動を検証する）。
+// 各回は「最小~最大」、固定値は最小=最大。区切りは回の間が "-"、幅が "~"。
+function normalizeDoseScheduleText(str) {
+  var s = String(str === undefined || str === null ? '' : str);
+  s = s.replace(/[０-９]/g, function (c) { return String.fromCharCode(c.charCodeAt(0) - 0xFEE0); });
+  s = s.replace(/[．]/g, '.');
+  s = s.replace(/[－ー—–‐−]/g, '-');
+  s = s.replace(/[〜～]/g, '~');
+  s = s.replace(/\s+/g, '');
+  return s;
+}
+function parseDoseSchedule(str) {
+  var s = normalizeDoseScheduleText(str);
+  if (s === '') return { ok: false, error: '用量スケジュールが空です' };
+  var parts = s.split('-');
+  if (parts.length > 12) return { ok: false, error: '用量スケジュールは1日12回までです' };
+  var doses = [];
+  var norm = [];
+  var numRe = /^\d+(\.\d+)?$/;
+  for (var i = 0; i < parts.length; i++) {
+    var p = parts[i];
+    if (p === '') return { ok: false, error: (i + 1) + '回目の用量が空です' };
+    var mm = p.split('~');
+    if (mm.length > 2) return { ok: false, error: (i + 1) + '回目の用量の形式が不正です' };
+    var minS = mm[0];
+    var maxS = mm.length === 2 ? mm[1] : mm[0];
+    if (!numRe.test(minS) || !numRe.test(maxS)) return { ok: false, error: (i + 1) + '回目の用量が数値ではありません' };
+    var mn = Number(minS);
+    var mx = Number(maxS);
+    if (mn > mx) return { ok: false, error: (i + 1) + '回目の最小が最大より大きいです' };
+    doses.push({ min: mn, max: mx });
+    norm.push(mn === mx ? String(mn) : String(mn) + '~' + String(mx));
+  }
+  return { ok: true, doses: doses, normalized: norm.join('-') };
+}
+// 最大時（薬剤の必要本数・在庫・枯渇日の基準）と最小時（針の基準）を同時に返す。
+// 空打ちは注射のたびに加算する（用量が0の回は注射しない＝空打ちも無し）。
+function calcScheduleDaily(doses, primingUnits) {
+  var priming = Number(primingUnits);
+  if (!isFinite(priming) || priming < 0) priming = 0;
+  var sumMax = 0, sumMin = 0, injMax = 0, injMin = 0;
+  for (var i = 0; i < doses.length; i++) {
+    sumMax += doses[i].max;
+    sumMin += doses[i].min;
+    if (doses[i].max > 0) injMax++;
+    if (doses[i].min > 0) injMin++;
+  }
+  var r3 = function (x) { return Math.round(x * 1000) / 1000; };
+  return {
+    dailyAmountMax: r3(sumMax + priming * injMax),
+    dailyAmountMin: r3(sumMin + priming * injMin),
+    injectionsMax: injMax,
+    injectionsMin: injMin
+  };
+}
+// 1本で最大回数使う想定の針の本数 = min(容量÷最小時の使用量/使用日, 開封後有効日数÷投与間隔) × 最小時の回数
+function calcNeedlesPerBottle(capacity, minPerUseDay, injectionsMin, expireDays, intervalDays) {
+  var cap = Number(capacity), minD = Number(minPerUseDay), inj = Number(injectionsMin);
+  var exp = Number(expireDays), itv = Number(intervalDays);
+  if (!(cap > 0) || !(minD > 0) || !(inj > 0)) return 0;
+  if (!(itv > 0)) itv = 1;
+  var useDays = cap / minD;
+  if (exp > 0 && exp < 999) useDays = Math.min(useDays, exp / itv);
+  return useDays * inj;
+}
+// @shared-end doseSchedule
+
+// ============================================================
+// 用量スケジュール入力部品（処方追加 / 用量変更 / ログ編集 / スケジュール設定 で共用）
+// prefix ごとに状態を持ち、既存の「1日回数」「1日使用量」入力要素を駆動する。
+//   スケジュールモード: 回ごとの用量（最小〜最大）を入力し、1日使用量は読み取り専用の計算値
+//   手入力モード      : 従来どおり1日使用量を直接入力（枠は隠す）
+// 計算はサーバ（コード.js の同名関数）と同じ式。サーバ側が正で、ここは表示と事前チェック。
+// ============================================================
+var _dsState = {};
+var DS_SLOT_LABELS = ['朝', '昼', '夕', '眠前'];
+
+function dsSlotLabel(i, n) { return (n <= 4) ? DS_SLOT_LABELS[i] : (i + 1) + '回目'; }
+function dsEmptySlots(n) { var a = []; for (var i = 0; i < n; i++) a.push({ min: '', max: '' }); return a; }
+function dsClamp(n) { n = parseInt(n); if (isNaN(n) || n < 1) return 1; return n > 12 ? 12 : n; }
+
+// opts: countId, amountId, toggleId, schedule, dailyAmount, dailyCount, priming, frequency,
+//       defaultMode('schedule'|'manual'), forceSchedule, noManual, prefillSingle
+function dsInit(prefix, opts) {
+  opts = opts || {};
+  var cur = parseFloat(opts.dailyAmount);
+  var st = {
+    countId: opts.countId, amountId: opts.amountId, toggleId: opts.toggleId || null,
+    priming: parseFloat(opts.priming) || 0,
+    frequency: opts.frequency || '毎日',
+    noManual: !!opts.noManual,
+    manualAmount: isNaN(cur) ? '' : String(cur),
+    manualCount: dsClamp(opts.dailyCount),
+    manualCountRaw: (opts.dailyCount === undefined || opts.dailyCount === null || String(opts.dailyCount).trim() === '') ? '' : String(opts.dailyCount),
+    slots: [], mode: 'manual'
+  };
+  _dsState[prefix] = st;
+  var parsed = opts.schedule ? parseDoseSchedule(opts.schedule) : { ok: false };
+  var useSchedule = false;
+  if (parsed.ok) {
+    var c = calcScheduleDaily(parsed.doses, st.priming);
+    // 保存済みスケジュールは、計算値が現在の1日使用量と一致するときだけスケジュールモードで開く
+    //（古いスケジュールは手入力モードに落として数値をそのまま見せる）
+    if (opts.forceSchedule || isNaN(cur) || Math.abs(c.dailyAmountMax - cur) <= 0.001) useSchedule = true;
+  }
+  if (useSchedule) {
+    st.slots = parsed.doses.map(function (d) { return { min: String(d.min), max: d.max === d.min ? '' : String(d.max) }; });
+    st.mode = 'schedule';
+  } else if (opts.defaultMode === 'schedule' || st.noManual) {
+    st.slots = dsEmptySlots(st.manualCount);
+    // 1日1回の従来処方は「現在の1日使用量 − 空打ち」を唯一の枠に入れる（確認するだけで済む）
+    if (opts.prefillSingle && st.manualCount === 1 && !isNaN(cur)) {
+      var single = Math.round((cur - st.priming) * 1000) / 1000;
+      if (single >= 0) st.slots[0] = { min: String(single), max: '' };
+    }
+    st.mode = 'schedule';
+  }
+  dsRender(prefix);
+}
+
+function dsHide(prefix, amountId) {
+  delete _dsState[prefix];
+  var box = document.getElementById(prefix + 'DoseSchedule'); if (box) box.innerHTML = '';
+  var tg = document.getElementById(prefix + 'DsToggle'); if (tg) tg.textContent = '';
+  var amountEl = amountId ? document.getElementById(amountId) : null;
+  if (amountEl) { amountEl.readOnly = false; amountEl.style.background = ''; }
+}
+
+function dsRender(prefix) {
+  var st = _dsState[prefix]; if (!st) return;
+  var box = document.getElementById(prefix + 'DoseSchedule');
+  var countEl = document.getElementById(st.countId);
+  var amountEl = document.getElementById(st.amountId);
+  var toggle = st.toggleId ? document.getElementById(st.toggleId) : null;
+  if (!box) return;
+  if (st.mode === 'schedule') {
+    var n = st.slots.length;
+    if (countEl) countEl.value = n;
+    var html = '<div class="form-group"><label>各回の用量（単位・空打ちを除く）</label>';
+    for (var i = 0; i < n; i++) {
+      var s = st.slots[i];
+      html += '<div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">'
+        + '<span style="width:48px;font-size:13px;flex-shrink:0">' + escHtml(dsSlotLabel(i, n)) + '</span>'
+        + '<input type="number" min="0" step="any" inputmode="decimal" placeholder="単位" value="' + escHtml(String(s.min)) + '" style="flex:1;min-width:0" oninput="dsOnSlotInput(\'' + prefix + '\',' + i + ',\'min\',this.value)">'
+        + '<span style="font-size:13px;color:#9aa5b4;flex-shrink:0">〜</span>'
+        + '<input type="number" min="0" step="any" inputmode="decimal" placeholder="最大（任意）" value="' + escHtml(String(s.max)) + '" style="flex:1;min-width:0" oninput="dsOnSlotInput(\'' + prefix + '\',' + i + ',\'max\',this.value)">'
+        + '</div>';
+    }
+    html += '<div id="' + prefix + 'DsReadout" style="font-size:12px;color:#1a6fbf;margin-top:4px;line-height:1.6"></div></div>';
+    box.innerHTML = html;
+    if (amountEl) { amountEl.readOnly = true; amountEl.style.background = '#f1f3f5'; }
+    if (toggle) toggle.textContent = st.noManual ? '' : '手入力に切替';
+  } else {
+    box.innerHTML = '';
+    if (countEl) countEl.value = st.manualCountRaw; // 空の従来処方は空のまま（1を書き込まない）
+    if (amountEl) { amountEl.readOnly = false; amountEl.style.background = ''; amountEl.value = st.manualAmount; }
+    if (toggle) toggle.textContent = 'スケジュール入力に切替';
+  }
+  dsUpdateReadout(prefix);
+}
+
+function dsOnSlotInput(prefix, i, which, value) {
+  var st = _dsState[prefix]; if (!st || !st.slots[i]) return;
+  st.slots[i][which] = value;
+  dsUpdateReadout(prefix);
+}
+
+// 1日回数（枠数）の変更: 残る枠の入力は保持し、減らした分は捨てる
+function dsOnCountChange(prefix) {
+  var st = _dsState[prefix]; if (!st) return;
+  var countEl = document.getElementById(st.countId);
+  // 入力途中（空・非数値）では枠を触らない（Backspaceで一瞬空になった瞬間に2枠目以降を消さない）
+  if (!countEl || String(countEl.value).trim() === '' || isNaN(parseInt(countEl.value))) return;
+  var n = dsClamp(countEl.value);
+  if (st.mode === 'schedule') {
+    while (st.slots.length < n) st.slots.push({ min: '', max: '' });
+    st.slots.length = n;
+    dsRender(prefix);
+  } else {
+    st.manualCount = n;
+    st.manualCountRaw = String(n);
+  }
+}
+
+function dsToggleMode(prefix) {
+  var st = _dsState[prefix]; if (!st || st.noManual) return;
+  if (st.mode === 'schedule') {
+    var v = dsGetValue(prefix);
+    if (v.valid && v.calc) st.manualAmount = String(v.calc.dailyAmountMax);
+    st.manualCount = st.slots.length;
+    st.manualCountRaw = String(st.slots.length);
+    st.mode = 'manual';
+  } else {
+    var amountEl = document.getElementById(st.amountId);
+    if (amountEl) st.manualAmount = amountEl.value;
+    var countEl = document.getElementById(st.countId);
+    st.manualCount = dsClamp(countEl ? countEl.value : st.manualCount);
+    if (st.slots.length !== st.manualCount) st.slots = dsEmptySlots(st.manualCount);
+    st.mode = 'schedule';
+  }
+  dsRender(prefix);
+}
+
+function dsSetPriming(prefix, v) { var st = _dsState[prefix]; if (!st) return; st.priming = parseFloat(v) || 0; dsUpdateReadout(prefix); }
+function dsSetFrequency(prefix, f) { var st = _dsState[prefix]; if (!st) return; st.frequency = f || '毎日'; dsUpdateReadout(prefix); }
+
+// 入力枠 → スケジュール文字列（"2-4~6-2"）。未入力の枠があればエラー
+function dsBuildString(st) {
+  var parts = [];
+  for (var i = 0; i < st.slots.length; i++) {
+    var mn = String(st.slots[i].min === undefined || st.slots[i].min === null ? '' : st.slots[i].min).trim();
+    var mx = String(st.slots[i].max === undefined || st.slots[i].max === null ? '' : st.slots[i].max).trim();
+    if (mn === '') return { error: dsSlotLabel(i, st.slots.length) + 'の用量を入力してください（注射しない回は0）' };
+    parts.push(mx === '' ? mn : mn + '~' + mx);
+  }
+  return { text: parts.join('-') };
+}
+
+// → { mode, schedule, valid, error, calc }。手入力モードは schedule:'' で valid:true
+function dsGetValue(prefix) {
+  var st = _dsState[prefix];
+  if (!st || st.mode !== 'schedule') return { mode: 'manual', schedule: '', valid: true };
+  var b = dsBuildString(st);
+  if (b.error) return { mode: 'schedule', schedule: '', valid: false, error: b.error };
+  var parsed = parseDoseSchedule(b.text);
+  if (!parsed.ok) return { mode: 'schedule', schedule: '', valid: false, error: parsed.error };
+  var calc = calcScheduleDaily(parsed.doses, st.priming);
+  if (calc.dailyAmountMax <= 0) return { mode: 'schedule', schedule: parsed.normalized, valid: false, error: '用量が全て0です', calc: calc };
+  return { mode: 'schedule', schedule: parsed.normalized, valid: true, calc: calc };
+}
+
+function dsUpdateReadout(prefix) {
+  var st = _dsState[prefix]; if (!st || st.mode !== 'schedule') return;
+  var v = dsGetValue(prefix);
+  var amountEl = document.getElementById(st.amountId);
+  if (amountEl) amountEl.value = (v.valid && v.calc) ? v.calc.dailyAmountMax : '';
+  var el = document.getElementById(prefix + 'DsReadout'); if (!el) return;
+  var lines = [];
+  lines.push(st.priming > 0 ? '空打ち ' + escHtml(String(st.priming)) + ' 単位/回（薬品マスタ）' : '空打ちなし（薬品マスタに未設定）');
+  if (v.valid && v.calc) {
+    var c = v.calc;
+    var range = Math.abs(c.dailyAmountMax - c.dailyAmountMin) > 0.0005;
+    lines.push('= 1日使用量 <b>' + c.dailyAmountMax + '</b> 単位/日' + (range ? '（最大時）' : '') + '　注射 ' + c.injectionsMax + ' 回/日');
+    if (range) lines.push('最小時 ' + c.dailyAmountMin + ' 単位/日・注射 ' + Math.max(1, c.injectionsMin) + ' 回/日（針の基準。1日回数として保存）');
+    if (st.frequency && st.frequency !== '毎日') lines.push('※ 使用する日1日あたりの量。使用頻度（' + escHtml(st.frequency) + '）で換算されます');
+  } else if (v.error) {
+    lines.push('<span style="color:#9aa5b4">' + escHtml(v.error) + '</span>');
+  }
+  el.innerHTML = lines.join('<br>');
+}
+
+// ============================================================
+// 用量スケジュール設定（従来処方の切り替え・設定済みの変更）
+//   計算値が現在の1日使用量と同じ → updatePrescription でスケジュールと1日回数だけ保存（ログなし）
+//   違う → 確認のうえ「用量変更」ログ（今日）として記録（使用量の変更はログ経由に限定。
+//         在庫リプレイは 初期_1日使用量＋用量変更ログ から使用量を復元するため）
+// ============================================================
+var _setupDsSubmitting = false;
+function openSetupDs(pid, mname, dailyAmount, dailyCount, priming, freq, schedule) {
+  document.getElementById('setupDsPid').value = pid;
+  document.getElementById('setupDsMedName').textContent = mname;
+  document.getElementById('setupDsCurrent').textContent = dailyAmount;
+  dsInit('setup', { countId: 'setupDailyCount', amountId: 'setupAmount', schedule: schedule, dailyAmount: dailyAmount,
+    dailyCount: dailyCount, priming: priming, frequency: freq, noManual: true, forceSchedule: true, prefillSingle: true });
+  openModal('setupDsModal');
+}
+async function submitSetupDs() {
+  if (_setupDsSubmitting || !currentPatient) return;
+  var pid = document.getElementById('setupDsPid').value;
+  var ds = dsGetValue('setup');
+  if (!ds.valid) { toast(ds.error); return; }
+  var current = parseFloat(document.getElementById('setupDsCurrent').textContent) || 0;
+  var same = Math.abs(ds.calc.dailyAmountMax - current) <= 0.001;
+  if (!same && !confirm('1日使用量が ' + current + ' → ' + ds.calc.dailyAmountMax + ' 単位/日に変わります。\n今日の日付で「用量変更」として記録しますか？')) return;
+  _setupDsSubmitting = true;
+  var pg = progressStart('保存しています…');
+  try {
+    var res = null;
+    if (same) {
+      await api('updatePrescription', null, { prescriptionId: pid, schedule: ds.schedule });
+    } else {
+      res = await api('addLog', null, { prescriptionId: pid, action: '用量変更', date: todayStr(), memo: '用量スケジュール設定',
+        newSchedule: ds.schedule, returnPrescriptions: true });
+    }
+    toast('✓ 用量スケジュールを保存しました');
+    closeModal('setupDsModal');
+    if (res && res.prescriptions) {
+      renderPatientDetail(currentPatient, res.prescriptions);
+    } else {
+      progressStep(pg, '最新の処方を取得しています…');
+      var prescriptions = await api('getPrescriptions', { patientId: currentPatient.patientId });
+      renderPatientDetail(currentPatient, prescriptions);
+    }
+  } catch (e) {
+    toast('保存に失敗しました: ' + e.message);
+  } finally {
+    _setupDsSubmitting = false;
+    progressEnd(pg);
+  }
+}
+
 // ============================================================
 // 旧永続キャッシュ(initCache_v1)の後始末（チーフレビュー2巡目・2026-08-12）
 // ------------------------------------------------------------
@@ -1975,6 +2309,27 @@ function renderRxCard(p, stopped) {
   // 受取ボタン用に在庫・枯渇日も渡す
   var curStock      = escAttrJs(String(p.stock !== undefined && p.stock !== null ? p.stock : ''));
   var curDepDate    = escAttrJs(String(p.effectiveDepletionDate || ''));
+  // 用量スケジュール（未設定なら切り替え導線を出す）
+  var curSchedule = escAttrJs(String(p.schedule || ''));
+  var curPriming  = escAttrJs(String(p.primingUnits || 0));
+  var setupArgs = '\'' + pid + '\',\'' + mname + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curPriming + '\',\'' + curFreq + '\',\'' + curSchedule + '\'';
+  var scheduleInfo = '';
+  if (!isInhaler && !stopped) {
+    // 保存済みスケジュールの計算値が現在の1日使用量と一致しない（手入力で変更された後など）ときは
+    // そのまま見せず「要再設定」を出す（フォームと doseMinValues_ の不一致判定と同じ規則）
+    var schedStale = false;
+    if (p.schedule) {
+      var ps = parseDoseSchedule(p.schedule);
+      schedStale = !ps.ok || Math.abs(calcScheduleDaily(ps.doses, parseFloat(p.primingUnits) || 0).dailyAmountMax - (parseFloat(p.dailyAmount) || 0)) > 0.001;
+    }
+    if (!p.schedule) {
+      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法</span><span><a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="color:var(--warning);font-weight:600">スケジュール未設定 → 設定する</a></span></div>';
+    } else if (schedStale) {
+      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法</span><span><span style="color:var(--gray-400);text-decoration:line-through">' + escHtml(p.schedule) + '</span> <a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="color:var(--warning);font-weight:600">現在値と不一致 → 再設定する</a></span></div>';
+    } else {
+      scheduleInfo = '<div class="rx-row"><span class="rx-label">用法</span><span>' + escHtml(p.schedule) + (p.primingUnits ? '（空打ち' + escHtml(p.primingUnits) + '）' : '') + ' <a href="#" onclick="openSetupDs(' + setupArgs + ');return false" style="font-size:11px;margin-left:4px">変更</a></span></div>';
+    }
+  }
   var actions = stopped
     ? '<div class="rx-actions">'
       + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\',\'' + escAttrJs(p.medicineType || '') + '\')">📋 履歴</button>'
@@ -1982,7 +2337,7 @@ function renderRxCard(p, stopped) {
     : '<div class="rx-actions">'
       + '<button class="btn btn-primary btn-sm" onclick="openLogModal(\'' + pid + '\',\'処方受取\',\'' + mname + '\',\'' + cap + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curFreq + '\',\'' + curStock + '\',\'' + curDepDate + '\',\'' + escAttrJs(String(p.expireDays || '9999')) + '\')">受取</button>'
       + '<button class="btn btn-outline btn-sm" onclick="openLogModal(\'' + pid + '\',\'残数確認\',\'' + mname + '\',\'' + cap + '\')">残数</button>'
-      + '<button class="btn btn-outline btn-sm" onclick="openLogModal(\'' + pid + '\',\'用量変更\',\'' + mname + '\',\'' + cap + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curFreq + '\')">変更</button>'
+      + '<button class="btn btn-outline btn-sm" onclick="openLogModal(\'' + pid + '\',\'用量変更\',\'' + mname + '\',\'' + cap + '\',\'' + curDailyAmt + '\',\'' + curDailyCount + '\',\'' + curFreq + '\',\'\',\'\',\'\',\'' + curSchedule + '\',\'' + curPriming + '\')">変更</button>'
       + '<button class="btn btn-outline btn-sm" onclick="showHistory(\'' + pid + '\',\'' + escAttrJs(p.medicineType || '') + '\')">履歴</button>'
       + '</div>';
 
@@ -2010,6 +2365,7 @@ function renderRxCard(p, stopped) {
     + '</div>'
     + '<div class="rx-row"><span class="rx-label">使用頻度</span><span>' + escHtml(p.frequency || '-') + '</span></div>'
     + dailyCountInfo
+    + scheduleInfo
     + '<div class="rx-row"><span class="rx-label">1日使用量</span><span>' + escHtml(p.dailyAmount || '-') + ' 単位/日</span></div>'
     + daysPerBottleInfo
     + expireDaysInfo
@@ -2162,7 +2518,7 @@ function onLogDateChange() {
   else updateLogDepletionPreview();
 }
 
-function openLogModal(prescriptionId, action, medicineName, capacity, curDailyAmount, curDailyCount, curFrequency, curStock, curDepDate, expireDays) {
+function openLogModal(prescriptionId, action, medicineName, capacity, curDailyAmount, curDailyCount, curFrequency, curStock, curDepDate, expireDays, curSchedule, primingUnits) {
   document.getElementById('logPrescriptionId').value = prescriptionId;
   document.getElementById('logModalTitle').textContent = medicineName;
   document.getElementById('logAction').value = action;
@@ -2184,9 +2540,13 @@ function openLogModal(prescriptionId, action, medicineName, capacity, curDailyAm
   if (action === '用量変更') {
     document.getElementById('logNewDailyAmount').value = curDailyAmount || '';
     document.getElementById('logNewDailyCount').value  = curDailyCount  || '';
+    // 保存済みスケジュールが現在値と一致すればスケジュールモード、それ以外は手入力モードで開く
+    dsInit('logNew', { countId: 'logNewDailyCount', amountId: 'logNewDailyAmount', toggleId: 'logNewDsToggle',
+      schedule: curSchedule || '', dailyAmount: curDailyAmount, dailyCount: curDailyCount, priming: primingUnits, frequency: curFrequency });
   } else {
     document.getElementById('logNewDailyAmount').value = '';
     document.getElementById('logNewDailyCount').value  = '';
+    dsHide('logNew', 'logNewDailyAmount');
   }
   // 処方受取の場合：自動計算データをセットして初期値を計算
   if (action === '処方受取') {
@@ -2463,11 +2823,19 @@ async function submitLog() {
     body.newStock = cap > 0 ? bottles * cap : bottles;
     body.stockBottles = bottles; // 本数も記録用に送る
   } else if (action === '用量変更') {
-    var d = document.getElementById('logNewDailyAmount').value;
-    if (!d || isNaN(d)) { toast('新しい使用量を入力してください'); return; }
-    body.newDailyAmount = parseFloat(d);
-    var dc = document.getElementById('logNewDailyCount').value;
-    if (dc && !isNaN(dc)) body.newDailyCount = parseInt(dc);
+    var dsL = dsGetValue('logNew');
+    if (dsL.mode === 'schedule') {
+      if (!dsL.valid) { toast(dsL.error); return; }
+      body.newSchedule    = dsL.schedule;          // サーバがスケジュールから再計算する（送る数値は表示用）
+      body.newDailyAmount = dsL.calc.dailyAmountMax;
+    } else {
+      var d = document.getElementById('logNewDailyAmount').value;
+      if (!d || isNaN(d)) { toast('新しい使用量を入力してください'); return; }
+      body.newDailyAmount = parseFloat(d);
+      var dc = document.getElementById('logNewDailyCount').value;
+      if (dc && !isNaN(dc)) body.newDailyCount = parseInt(dc);
+      body.newSchedule = '';                       // 手入力に戻す（保存済みスケジュールをクリア）
+    }
   }
 
   _logSubmitting = true;
@@ -2601,6 +2969,12 @@ async function openEditLogModal(logId) {
     document.getElementById('editLogStock').value = log.stockAfter !== undefined && log.stockAfter !== null && log.stockAfter !== '' ? log.stockAfter : '';
     document.getElementById('editLogDailyAmount').value = log.newDailyAmount || '';
     document.getElementById('editLogDailyCount').value = log.dailyCount || '';
+    if (log.action === '用量変更') {
+      dsInit('editLog', { countId: 'editLogDailyCount', amountId: 'editLogDailyAmount', toggleId: 'editLogDsToggle',
+        schedule: log.currentSchedule || '', dailyAmount: log.newDailyAmount, dailyCount: log.dailyCount, priming: log.primingUnits, frequency: log.frequency });
+    } else {
+      dsHide('editLog', 'editLogDailyAmount');
+    }
     var nv = log.nextVisitDate && log.nextVisitDate !== '1970/01/01' ? log.nextVisitDate.replace(/\//g, '-') : '';
     document.getElementById('editLogNextVisit').value = nv;
     // 残数確認用capacity
@@ -2663,10 +3037,18 @@ async function submitEditLog() {
     body.stockAfter = cap > 0 ? bottles * cap : bottles;
     body.stockBottles = bottles;
   }
-  var d = document.getElementById('editLogDailyAmount').value;
-  if (d) body.newDailyAmount = parseFloat(d);
-  var dc = document.getElementById('editLogDailyCount').value;
-  if (dc && !isNaN(dc)) body.newDailyCount = parseInt(dc);
+  var dsE = dsGetValue('editLog');
+  if (action === '用量変更' && dsE.mode === 'schedule') {
+    if (!dsE.valid) { toast(dsE.error); return; }
+    body.newSchedule    = dsE.schedule;            // サーバがスケジュールから再計算する
+    body.newDailyAmount = dsE.calc.dailyAmountMax;
+  } else {
+    // 手入力（ログ編集では保存済みスケジュールに触らない。最新でないログの編集で消さないため）
+    var d = document.getElementById('editLogDailyAmount').value;
+    if (d) body.newDailyAmount = parseFloat(d);
+    var dc = document.getElementById('editLogDailyCount').value;
+    if (dc && !isNaN(dc)) body.newDailyCount = parseInt(dc);
+  }
   var nv = document.getElementById('editLogNextVisit').value;
   if (nv) body.nextVisitDate = nv;
   // returnLogs/returnPrescriptions:true で、変更後の履歴・処方一覧をこの応答に
@@ -2792,6 +3174,9 @@ async function openAddPrescriptionModal() {
   document.getElementById('addRxDailyCount').value = '1';
   document.getElementById('addRxDailyCountHint').textContent = '';
   document.getElementById('addRxMemo').value = '';
+  // 用量スケジュール入力（新規はスケジュールモードで開く。薬品選択時に空打ちを反映）
+  dsInit('addRx', { countId: 'addRxDailyCount', amountId: 'addRxAmount', toggleId: 'addRxDsToggle',
+    schedule: '', dailyAmount: '', dailyCount: 1, priming: 0, frequency: '毎日', defaultMode: 'schedule' });
   // 薬品リストを読み込んで検索セレクトを生成
   document.getElementById('addRxMedicine').innerHTML = '<div style="color:#9aa5b4;font-size:13px;padding:8px">読み込み中...</div>';
   try {
@@ -2829,6 +3214,10 @@ function onAddRxMedicineChange(medicineId) {
   } else {
     document.getElementById('addRxDailyCountHint').textContent = '';
   }
+  // 用量スケジュール部品へ空打ち単位数・使用頻度・回数を反映
+  dsSetPriming('addRx', med['空打ち単位数']);
+  dsSetFrequency('addRx', document.getElementById('addRxFreq').value);
+  dsOnCountChange('addRx');
 }
 
 async function submitAddPrescription() {
@@ -2842,6 +3231,11 @@ async function submitAddPrescription() {
   var date        = document.getElementById('addRxDate').value;
   var memo        = document.getElementById('addRxMemo').value;
   if (!medicineId) { toast('薬品を選択してください'); return; }
+  var dsA = dsGetValue('addRx');
+  if (dsA.mode === 'schedule') {
+    if (!dsA.valid) { toast(dsA.error); return; }
+    amount = String(dsA.calc.dailyAmountMax); // 表示用。サーバはスケジュールから再計算する
+  }
   if (!amount || isNaN(amount)) { toast('1日使用量を入力してください'); return; }
   _addRxSubmitting = true;
   var pg = progressStart('処方を追加しています…');
@@ -2855,6 +3249,7 @@ async function submitAddPrescription() {
       frequency:   freq,
       dailyCount:  parseInt(dailyCount) || 1,
       dailyAmount: parseFloat(amount),
+      schedule:    dsA.mode === 'schedule' ? dsA.schedule : '',
       stock:       stock ? parseFloat(stock) : 0,
       startDate:   date,
       memo:        memo,
@@ -3507,7 +3902,11 @@ function renderVisitResults(result) {
       var dailyUseUnits = intervalDays > 0 ? onceAmount / intervalDays : 0;
 
       // 針の計算（注射薬のみ）
-      var needlesPerBottle  = daysPerBottle * timesPerDay;
+      // 針: 1本を最大回数使う想定（最小時の使用量で使い切り、最小時の回数を掛ける）。
+      // 旧バックエンド／保存済み計画に dailyAmountMin が無ければ従来値へフォールバック。
+      var minPerUseDay = parseFloat(m.dailyAmountMin); if (!(minPerUseDay > 0)) minPerUseDay = onceAmount;
+      var injMin = parseInt(m.dailyCountMin); if (!(injMin > 0)) injMin = parseInt(m.dailyCount) || 1;
+      var needlesPerBottle  = calcNeedlesPerBottle(m.capacity, minPerUseDay, injMin, m.expireDays, intervalDays);
       var needlesForThisMed = (isInjection && m.requiredBottles > 0 && needlesPerBottle > 0)
         ? Math.ceil(m.requiredBottles * needlesPerBottle) : 0;
       if (isInjection) totalNeedles += needlesForThisMed;
@@ -3520,7 +3919,7 @@ function renderVisitResults(result) {
       var needleInfo = '';
       if (isInjection && m.requiredBottles > 0 && needlesForThisMed > 0) {
         needleInfo = '<div style="background:#f3e5f5;border-radius:6px;padding:5px 10px;font-size:12px;margin-top:4px">'
-          + '💉 針: ' + Math.round(needlesPerBottle) + '本/本 × ' + m.requiredBottles + '本 = <b>' + needlesForThisMed + '本</b>'
+          + '💉 針: ' + Math.round(needlesPerBottle) + '本/本（最小時 ' + minPerUseDay + '単位/日 × ' + injMin + '回/日）× ' + m.requiredBottles + '本 = <b>' + needlesForThisMed + '本</b>'
           + '</div>';
       }
 
@@ -3878,8 +4277,11 @@ function visitPrintPDF() {
       // 針計算
       var needlesTotal = 0;
       var needlePacks  = 0;
-      if (isInjection && daysPerBottle > 0 && bottles > 0) {
-        needlesTotal = Math.ceil(daysPerBottle * timesPerDay * bottles);
+      var minPerUseDay = parseFloat(m.dailyAmountMin); if (!(minPerUseDay > 0)) minPerUseDay = onceAmount;
+      var injMin = parseInt(m.dailyCountMin); if (!(injMin > 0)) injMin = parseInt(m.dailyCount) || 1;
+      var needlesPerBottle = calcNeedlesPerBottle(capacity, minPerUseDay, injMin, m.expireDays, intervalDays);
+      if (isInjection && needlesPerBottle > 0 && bottles > 0) {
+        needlesTotal = Math.ceil(needlesPerBottle * bottles);
         needlePacks  = Math.ceil(needlesTotal / 14);
         ptTotalNeedles += needlesTotal;
       }
@@ -4124,7 +4526,11 @@ function renderVisitPlanDetailResult(result) {
       var daysPerBottle = (onceAmount > 0) ? (m.capacity / onceAmount * intervalDays) : 0;
       var dailyUseUnits = intervalDays > 0 ? onceAmount / intervalDays : 0;
 
-      var needlesPerBottle  = daysPerBottle * timesPerDay;
+      // 針: 1本を最大回数使う想定（最小時の使用量で使い切り、最小時の回数を掛ける）。
+      // 旧バックエンド／保存済み計画に dailyAmountMin が無ければ従来値へフォールバック。
+      var minPerUseDay = parseFloat(m.dailyAmountMin); if (!(minPerUseDay > 0)) minPerUseDay = onceAmount;
+      var injMin = parseInt(m.dailyCountMin); if (!(injMin > 0)) injMin = parseInt(m.dailyCount) || 1;
+      var needlesPerBottle  = calcNeedlesPerBottle(m.capacity, minPerUseDay, injMin, m.expireDays, intervalDays);
       var needlesForThisMed = (isInjection && m.requiredBottles > 0 && needlesPerBottle > 0)
         ? Math.ceil(m.requiredBottles * needlesPerBottle) : 0;
       if (isInjection) totalNeedles += needlesForThisMed;
@@ -4136,7 +4542,7 @@ function renderVisitPlanDetailResult(result) {
       var needleInfo = '';
       if (isInjection && m.requiredBottles > 0 && needlesForThisMed > 0) {
         needleInfo = '<div style="background:#f3e5f5;border-radius:6px;padding:5px 10px;font-size:12px;margin-top:4px">'
-          + '💉 針: ' + Math.round(needlesPerBottle) + '本/本 × ' + m.requiredBottles + '本 = <b>' + needlesForThisMed + '本</b>'
+          + '💉 針: ' + Math.round(needlesPerBottle) + '本/本（最小時 ' + minPerUseDay + '単位/日 × ' + injMin + '回/日）× ' + m.requiredBottles + '本 = <b>' + needlesForThisMed + '本</b>'
           + '</div>';
       }
 
@@ -4228,6 +4634,7 @@ var MASTER_DEF = {
       { key: '種類',           label: '種類',         type: 'select', required: false, options: ['注射', '吸入薬', '経口薬', 'その他'] },
       { key: '1本容量',        label: '1本容量（単位）', type: 'number', required: false },
       { key: '開封後有効日数', label: '開封後有効日数（期限なしは999）', type: 'number', required: false },
+      { key: '空打ち単位数',   label: '空打ち単位数（1回あたり・なければ空欄）', type: 'number', required: false },
       { key: '使用頻度',       label: '使用頻度（固定の場合）', type: 'select', required: false, options: ['', '毎日', '週2回', '週1回', '月1回'] },
       { key: '1日回数',        label: '1日回数（固定の場合）', type: 'number', required: false },
     ],
@@ -4249,6 +4656,7 @@ var MASTER_DEF = {
       { key: '確定在庫_単位', label: '現在在庫（単位）', type: 'number', required: false },
       { key: '1日使用量',   label: '1日使用量（単位・空打ち含む）', type: 'number', required: false },
       { key: '使用頻度',    label: '使用頻度',     type: 'select', required: false, options: ['毎日','週2回','週1回','月1回'] },
+      { key: '用量スケジュール', label: '用量スケジュール（例: 2-4-2、幅は 2~4。空欄=手入力）', type: 'text', required: false },
       { key: 'ステータス',  label: 'ステータス',   type: 'select', required: false, options: ['使用中','中止'] },
       { key: '処方開始日',  label: '処方開始日',   type: 'text',   required: false },
     ],
