@@ -408,7 +408,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
         <input type="number" id="settingsReportStockDays" min="1" value="28" style="max-width:120px">
       </div>
       <div class="form-group">
-        <label>針の表示名</label>
+        <label>針の既定名（患者ごとの設定が無い場合）</label>
         <input type="text" id="settingsReportNeedleName" placeholder="マイクロファインプロ">
       </div>
       <button class="btn btn-primary btn-sm" onclick="saveReportSettings()">保存</button>
@@ -1658,6 +1658,7 @@ const WRITE_ACTIONS_FRONT = {
   addLog: 1, addBulkLogs: 1, addBulkReceipts: 1, addVisitPlan: 1, updateLog: 1, deleteLog: 1,
   updatePrescription: 1, addPrescription: 1, uploadPhoto: 1,
   addMaster: 1, updateMaster: 1, deleteMaster: 1, setSettings: 1,
+  setPatientNeedleName: 1,
 };
 
 // 在庫アラートの算出結果を変えうる書き込み。成功した時点で api() が一括で
@@ -3589,7 +3590,6 @@ function renderStockReportPreview(data) {
     container.innerHTML = '<div class="empty-state">この病院に使用中の処方がある患者がいません</div>';
     return;
   }
-  var needleName = data.needleName || '';
   var html = '';
   data.patients.forEach(function(pt) {
     html += '<div class="card" style="margin-top:10px">'
@@ -3623,8 +3623,24 @@ function renderStockReportPreview(data) {
     });
 
     if (pt.needle) {
+      var patIdAttr = escHtml(pt.patientId);   // id属性用（生の値）
+      var patIdJs   = escAttrJs(pt.patientId); // onchange内のJS文字列リテラル用
+      var needleOptions = data.needleOptions || [];
+      var selectedNeedle = pt.needle.name || '';
+      var needleOptsHtml = needleOptions.map(function(n) {
+        var sel = (n === selectedNeedle) ? ' selected' : '';
+        return '<option value="' + escHtml(n) + '"' + sel + '>' + escHtml(n) + '</option>';
+      }).join('') + '<option value="__new__">＋ 新しい種類を追加</option>';
+
       html += '<div style="padding:8px 0;font-size:13px;color:#1a6fbf">'
-        + '💉 ' + escHtml(needleName) + '（' + escHtml(String(pt.needle.weeklyCount)) + '本/週）定数 ' + escHtml(String(pt.needle.standing))
+        + '💉 <select id="sr-needle-' + patIdAttr + '" onchange="onStockReportNeedleChange(\'' + patIdJs + '\')" style="font-size:13px;padding:2px 4px">'
+        +   needleOptsHtml
+        + '</select>'
+        + '（' + escHtml(String(pt.needle.weeklyCount)) + '本/週）定数 ' + escHtml(String(pt.needle.standing))
+        + '<span id="sr-needle-new-' + patIdAttr + '" style="display:none;margin-left:6px">'
+        +   '<input type="text" id="sr-needle-new-input-' + patIdAttr + '" maxlength="50" placeholder="針の名称" style="width:120px;padding:2px 6px;font-size:12px">'
+        +   ' <button class="btn btn-outline btn-sm" onclick="saveStockReportNeedleName(\'' + patIdJs + '\')">保存</button>'
+        + '</span>'
         + '</div>';
     }
 
@@ -3648,6 +3664,41 @@ async function onStockReportOverrideChange(prescriptionId) {
   try {
     var res = await api('updatePrescription', null, body);
     if (res && res.error) { toast('保存失敗: ' + res.error); return; }
+    var hospitalId = document.getElementById('bulkHospitalId').value;
+    var data = await api('getStockReport', { hospitalId: hospitalId });
+    if (data && data.error) { toast('取得失敗: ' + data.error); return; }
+    renderStockReportPreview(data);
+  } catch (e) {
+    toast('保存失敗: ' + e.message);
+  }
+}
+
+// 針の<select>変更: 「＋ 新しい種類を追加」なら入力欄を出すだけ、それ以外は即保存
+function onStockReportNeedleChange(patientId) {
+  var sel = document.getElementById('sr-needle-' + patientId);
+  if (!sel) return;
+  var value = sel.value;
+  if (value === '__new__') {
+    var inline = document.getElementById('sr-needle-new-' + patientId);
+    if (inline) inline.style.display = '';
+    var input = document.getElementById('sr-needle-new-input-' + patientId);
+    if (input && input.focus) input.focus();
+    return;
+  }
+  return saveStockReportNeedleName(patientId, value);
+}
+
+async function saveStockReportNeedleName(patientId, value) {
+  var needleName = value;
+  if (needleName === undefined) {
+    var input = document.getElementById('sr-needle-new-input-' + patientId);
+    needleName = input ? input.value : '';
+  }
+  needleName = String(needleName === undefined || needleName === null ? '' : needleName).trim();
+  if (!needleName) { toast('針の名称を入力してください'); return; }
+  try {
+    var res = await api('setPatientNeedleName', null, { patientId: patientId, needleName: needleName });
+    if (res && res.error) toast('保存失敗: ' + res.error);   // 失敗でも再取得して select をサーバの値に戻す
     var hospitalId = document.getElementById('bulkHospitalId').value;
     var data = await api('getStockReport', { hospitalId: hospitalId });
     if (data && data.error) { toast('取得失敗: ' + data.error); return; }
@@ -3695,7 +3746,7 @@ function stockReportPrint() {
     });
     if (pt.needle) {
       subRows.push({
-        label: escHtml(data.needleName) + '（' + escHtml(String(pt.needle.weeklyCount)) + '本/週）',
+        label: escHtml(pt.needle.name || data.needleName) + '（' + escHtml(String(pt.needle.weeklyCount)) + '本/週）',
         standing: pt.needle.standing,
       });
     }
@@ -4945,6 +4996,7 @@ var MASTER_DEF = {
       { key: '氏名',                            label: '氏名',           type: 'text',   required: true  },
       { key: '検索用ID（6桁、和暦生年月日）',  label: '生年月日コード', type: 'text',   required: false },
       { key: '病院ID',                          label: '病院',           type: 'select', required: true,  optionSource: 'hospital' },
+      { key: '針の種類',                        label: '針の種類（残薬報告書用・空欄=既定名）', type: 'text', required: false },
     ],
     rowLabel: function(r) { return r['氏名'] + '　' + (r['_facilityName'] || '') + ' / ' + (r['_hospitalName'] || ''); },
   },
