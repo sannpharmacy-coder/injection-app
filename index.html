@@ -397,6 +397,24 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       <span id="visitSettingsSaved" style="font-size:13px;color:var(--success);margin-left:10px;display:none">✓ 保存しました</span>
     </div>
 
+    <!-- 残薬報告書 設定 -->
+    <div class="card" style="margin-top:12px">
+      <div style="font-size:15px;font-weight:700;margin-bottom:12px">📄 残薬報告書</div>
+      <p style="font-size:13px;color:var(--gray-400);margin-bottom:14px;line-height:1.7">
+        残薬報告書の「定数」を計算するための在庫日数と、針の表示名です。
+      </p>
+      <div class="form-group">
+        <label>定数日数（日）</label>
+        <input type="number" id="settingsReportStockDays" min="1" value="28" style="max-width:120px">
+      </div>
+      <div class="form-group">
+        <label>針の表示名</label>
+        <input type="text" id="settingsReportNeedleName" placeholder="マイクロファインプロ">
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="saveReportSettings()">保存</button>
+      <span id="reportSettingsSaved" style="font-size:13px;color:var(--success);margin-left:10px;display:none">✓ 保存しました</span>
+    </div>
+
     <!-- 在庫アラート閾値設定 -->
     <div class="card" style="margin-top:12px">
       <div style="font-size:15px;font-weight:700;margin-bottom:12px">🔔 在庫アラート閾値</div>
@@ -448,6 +466,29 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       <div style="display:flex;gap:8px;margin-top:0">
         <button class="btn btn-primary" style="flex:1" onclick="loadBulkStock()">一覧を読み込む</button>
         <button class="btn btn-outline" onclick="loadBulkLogHistory()" style="white-space:nowrap">📋 過去の記録</button>
+        <button class="btn btn-outline" onclick="openStockReport()" style="white-space:nowrap">🖨 残薬報告書</button>
+      </div>
+    </div>
+
+    <!-- 残薬報告書 -->
+    <div id="stockReportSection" style="display:none">
+      <div class="card">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
+          <div style="font-size:15px;font-weight:700">🖨 残薬報告書</div>
+          <button class="btn btn-outline btn-sm" onclick="closeStockReport()">✕ 閉じる</button>
+        </div>
+        <div class="form-group">
+          <label>在庫確認日</label>
+          <input type="date" id="stockReportCheckDate">
+        </div>
+        <div class="form-group" style="margin-bottom:0">
+          <label>往診予定日</label>
+          <input type="date" id="stockReportVisitDate">
+        </div>
+      </div>
+      <div id="stockReportPatients"></div>
+      <div style="padding:12px">
+        <button class="btn btn-primary btn-full" style="font-size:16px;padding:14px" onclick="stockReportPrint()">🖨 印刷する</button>
       </div>
     </div>
 
@@ -1358,6 +1399,50 @@ async function saveVisitSettings() {
 }
 
 // ============================================================
+// 残薬報告書 設定（定数日数・針の表示名。全端末共通・Script Properties）
+// ============================================================
+var _reportStockDays = 28;
+var _reportNeedleName = 'マイクロファインプロ';
+var _reportSettingsLoaded = false;
+
+async function loadReportSettings() {
+  var dInp = document.getElementById('settingsReportStockDays');
+  var nInp = document.getElementById('settingsReportNeedleName');
+  if (!dInp && !nInp) return;
+  if (_reportSettingsLoaded) {
+    if (dInp) dInp.value = _reportStockDays;
+    if (nInp) nInp.value = _reportNeedleName;
+    return;
+  }
+  try {
+    var s = await api('getSettings');
+    if (s && s.reportStockDays) { _reportStockDays = s.reportStockDays; if (dInp) dInp.value = s.reportStockDays; }
+    if (s && s.reportNeedleName) { _reportNeedleName = s.reportNeedleName; if (nInp) nInp.value = s.reportNeedleName; }
+    _reportSettingsLoaded = true;
+  } catch (e) { /* 取得失敗時は既定値のまま。次に開いたときにもう一度聞く */ }
+}
+
+async function saveReportSettings() {
+  var dInp = document.getElementById('settingsReportStockDays');
+  var nInp = document.getElementById('settingsReportNeedleName');
+  if (!dInp) return;
+  var n = parseInt(dInp.value, 10);
+  if (isNaN(n) || n <= 0) { toast('定数日数は1以上で入力してください'); return; }
+  try {
+    var res = await api('setSettings', null, { reportStockDays: n, reportNeedleName: nInp ? nInp.value : '' });
+    if (res && res.error) { toast('保存失敗: ' + res.error); return; }
+    if (res && res.reportStockDays) { dInp.value = res.reportStockDays; _reportStockDays = res.reportStockDays; }
+    if (res && res.reportNeedleName) { if (nInp) nInp.value = res.reportNeedleName; _reportNeedleName = res.reportNeedleName; }
+    _reportSettingsLoaded = true;
+    var msg = document.getElementById('reportSettingsSaved');
+    if (msg) { msg.style.display = 'inline'; setTimeout(function(){ msg.style.display = 'none'; }, 2000); }
+    toast('残薬報告書の設定を保存しました ✓');
+  } catch (e) {
+    toast('保存失敗: ' + e.message);
+  }
+}
+
+// ============================================================
 // 在庫アラート
 // ============================================================
 var _alertCache = null;
@@ -1805,7 +1890,7 @@ function showPage(page) {
   if (page === 'search')   { renderSearchPrompt(); loadAlerts(); }
   if (page === 'visit')    { loadHospitals(); setDefaultDates(); }
   if (page === 'bulk')     { loadHospitals().then(function() { initBulkPage(); }); }
-  if (page === 'settings') { initAlertThresholdInputs(); loadVisitSettings(); renderCommLog(); }
+  if (page === 'settings') { initAlertThresholdInputs(); loadVisitSettings(); loadReportSettings(); renderCommLog(); }
   if (page === 'master')   { loadMasterList(currentMasterTab); }
 }
 
@@ -2109,6 +2194,15 @@ async function initApp() {
       _visitBufferDaysLoaded = true;   // 設定画面を開いたときの往復を省くため
       var inp = document.getElementById('settingsVisitBufferDays');
       if (inp) inp.value = init.settings.visitBufferDays;
+    }
+    if (init.settings && (init.settings.reportStockDays || init.settings.reportNeedleName)) {
+      if (init.settings.reportStockDays)  _reportStockDays  = init.settings.reportStockDays;
+      if (init.settings.reportNeedleName) _reportNeedleName = init.settings.reportNeedleName;
+      _reportSettingsLoaded = true;   // 設定画面を開いたときの往復を省くため
+      var dInp = document.getElementById('settingsReportStockDays');
+      var nInp = document.getElementById('settingsReportNeedleName');
+      if (dInp && init.settings.reportStockDays)  dInp.value = init.settings.reportStockDays;
+      if (nInp && init.settings.reportNeedleName) nInp.value = init.settings.reportNeedleName;
     }
     if (init.hospitals) hospitals = init.hospitals; // DOM配線自体はloadHospitals()が後で行う
     if (!init.alerts) {
@@ -3440,6 +3534,250 @@ function showBulkHistory(prescriptionId) {
 var _bulkHistoryPrescriptionId = null;
 
 // ============================================================
+// 残薬報告書（一括残数確認ページから開く）
+// ============================================================
+var lastStockReport = null;
+
+async function openStockReport() {
+  var hospitalId = document.getElementById('bulkHospitalId').value;
+  if (!hospitalId) { toast('病院を選択してください'); return; }
+  document.getElementById('stockReportSection').style.display = '';
+  document.getElementById('bulkStockList').style.display = 'none';
+  document.getElementById('bulkPhotoSection').style.display = 'none';
+  document.getElementById('bulkSubmitSection').style.display = 'none';
+  document.getElementById('stockReportPatients').innerHTML = '<div class="loading"><div class="spinner"></div>読み込み中...</div>';
+  try {
+    var results = await Promise.all([
+      api('getStockReport', { hospitalId: hospitalId }),
+      api('getVisitPlans', { hospitalId: hospitalId }),
+    ]);
+    var data  = results[0];
+    var plans = results[1];
+    if (data && data.error) { toast('取得失敗: ' + data.error); closeStockReport(); return; }
+
+    var checkInp = document.getElementById('stockReportCheckDate');
+    var visitInp = document.getElementById('stockReportVisitDate');
+    var bulkDateVal = document.getElementById('bulkDate').value;
+    if (checkInp) checkInp.value = bulkDateVal || todayStr();
+    if (visitInp) {
+      // getVisitPlans は visitDate 降順で返すため先頭が最新
+      var latest = (plans && plans.length) ? plans[0] : null;
+      var today = todayStr().replace(/-/g, '/');
+      visitInp.value = (latest && latest.nextVisitDate && latest.nextVisitDate >= today)
+        ? latest.nextVisitDate.replace(/\//g, '-') : '';
+    }
+    renderStockReportPreview(data);
+  } catch (e) {
+    document.getElementById('stockReportPatients').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
+  }
+}
+
+function closeStockReport() {
+  document.getElementById('stockReportSection').style.display = 'none';
+  document.getElementById('bulkStockList').style.display = '';
+  if (window._bulkPatients && window._bulkPatients.length) {
+    document.getElementById('bulkPhotoSection').style.display = '';
+    document.getElementById('bulkSubmitSection').style.display = '';
+  }
+}
+
+function renderStockReportPreview(data) {
+  lastStockReport = data;
+  var container = document.getElementById('stockReportPatients');
+  if (!container) return;
+  if (!data || !data.patients || !data.patients.length) {
+    container.innerHTML = '<div class="empty-state">この病院に使用中の処方がある患者がいません</div>';
+    return;
+  }
+  var needleName = data.needleName || '';
+  var html = '';
+  data.patients.forEach(function(pt) {
+    html += '<div class="card" style="margin-top:10px">'
+      + '<div style="font-weight:700;font-size:15px;color:var(--primary);margin-bottom:10px;padding-bottom:6px;border-bottom:1px solid var(--gray-200)">'
+      + '👤 ' + escHtml(pt.name)
+      + '</div>';
+
+    pt.rows.forEach(function(row) {
+      var pidAttr = escHtml(row.prescriptionId);   // id属性用（生の値）
+      var pidJs   = escAttrJs(row.prescriptionId); // onchange内のJS文字列リテラル用
+      var standingText   = (row.standing === null || row.standing === undefined) ? '-' : escHtml(String(row.standing));
+      var placeholderText = (row.standingCalc === null || row.standingCalc === undefined) ? '' : escHtml(String(row.standingCalc));
+      var overrideVal = (row.standingOverride === null || row.standingOverride === undefined) ? '' : escHtml(String(row.standingOverride));
+
+      html += '<div style="padding:8px 0;border-bottom:1px solid #f0f0f0">'
+        + '<div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">'
+        + '<div style="font-size:13px">'
+        +   '<b>' + escHtml(row.medicineName) + '</b>'
+        +   '（' + escHtml(row.doseText) + '）'
+        +   '【' + escHtml(String(row.perBottleDays)) + '日】'
+        + '</div>'
+        + '<div style="display:flex;align-items:center;gap:6px">'
+        +   '<label style="font-size:12px;color:#9aa5b4;margin:0">定数上書き</label>'
+        +   '<input type="number" id="sr-fixed-' + pidAttr + '" min="0" step="1" placeholder="' + placeholderText + '" value="' + overrideVal + '"'
+        +   ' style="width:64px;padding:4px 6px;font-size:13px;text-align:center;border:1px solid var(--gray-200);border-radius:6px"'
+        +   ' onchange="onStockReportOverrideChange(\'' + pidJs + '\')">'
+        +   '<span style="font-size:13px;font-weight:700">定数 ' + standingText + '</span>'
+        + '</div>'
+        + '</div>'
+        + '</div>';
+    });
+
+    if (pt.needle) {
+      html += '<div style="padding:8px 0;font-size:13px;color:#1a6fbf">'
+        + '💉 ' + escHtml(needleName) + '（' + escHtml(String(pt.needle.weeklyCount)) + '本/週）定数 ' + escHtml(String(pt.needle.standing))
+        + '</div>';
+    }
+
+    html += '</div>';
+  });
+  container.innerHTML = html;
+}
+
+async function onStockReportOverrideChange(prescriptionId) {
+  var inp = document.getElementById('sr-fixed-' + prescriptionId);
+  if (!inp) return;
+  var raw = String(inp.value === undefined || inp.value === null ? '' : inp.value).trim();
+  var body = { prescriptionId: prescriptionId };
+  if (raw === '') {
+    body.fixedStockCount = '';
+  } else {
+    var n = Number(raw);
+    if (!Number.isInteger(n) || n < 0) { toast('定数は0以上の整数で入力してください'); return; }
+    body.fixedStockCount = n;
+  }
+  try {
+    var res = await api('updatePrescription', null, body);
+    if (res && res.error) { toast('保存失敗: ' + res.error); return; }
+    var hospitalId = document.getElementById('bulkHospitalId').value;
+    var data = await api('getStockReport', { hospitalId: hospitalId });
+    if (data && data.error) { toast('取得失敗: ' + data.error); return; }
+    renderStockReportPreview(data);
+  } catch (e) {
+    toast('保存失敗: ' + e.message);
+  }
+}
+
+// さん薬局の基本情報（印刷用・固定値）
+var STOCK_REPORT_PHARMACY = {
+  name: 'さん薬局', zip: '〒546-0011', address: '大阪市東住吉区針中野3-10-12',
+  tel: '06-6707-7740', fax: '06-6707-7750',
+};
+
+var WAREKI_YOBI = ['日', '月', '火', '水', '木', '金', '土'];
+// 'yyyy-MM-dd'（または 'yyyy/MM/dd'）→ 'R{和暦年}年{M}月{D}日({曜})'。2019年以降のみ想定。
+function toWarekiShort(dateStr) {
+  var parts = String(dateStr || '').split(/[-\/]/);
+  if (parts.length < 3) return '';
+  var y = parseInt(parts[0], 10), m = parseInt(parts[1], 10), d = parseInt(parts[2], 10);
+  if (!y || !m || !d) return '';
+  var dt = new Date(y, m - 1, d);
+  var yobi = WAREKI_YOBI[dt.getDay()];
+  return 'R' + (y - 2018) + '年' + m + '月' + d + '日(' + yobi + ')';
+}
+
+function stockReportPrint() {
+  if (!lastStockReport) return;
+  var data = lastStockReport;
+  var checkDateVal = document.getElementById('stockReportCheckDate').value;
+  var visitDateVal = document.getElementById('stockReportVisitDate').value;
+  var checkWareki = checkDateVal ? toWarekiShort(checkDateVal) : 'R　年　月　日（　）';
+  var visitWareki  = visitDateVal ? toWarekiShort(visitDateVal) : 'R　年　月　日（　）';
+  // visitPrintPDF と同じく、クエリとフラグメントを落としたURLだけを戻り先に使う
+  var appUrl = location.href.split('?')[0].split('#')[0];
+
+  var bodyRows = '';
+  (data.patients || []).forEach(function(pt) {
+    var subRows = (pt.rows || []).map(function(r) {
+      return {
+        label: escHtml(r.medicineName) + '（' + escHtml(r.doseText) + '）【' + escHtml(String(r.perBottleDays)) + '日】',
+        standing: r.standing,
+      };
+    });
+    if (pt.needle) {
+      subRows.push({
+        label: escHtml(data.needleName) + '（' + escHtml(String(pt.needle.weeklyCount)) + '本/週）',
+        standing: pt.needle.standing,
+      });
+    }
+    var n = subRows.length;
+    if (n === 0) return;
+    subRows.forEach(function(sr, i) {
+      var standingCell = (sr.standing === null || sr.standing === undefined) ? '' : escHtml(String(sr.standing));
+      bodyRows += '<tr>';
+      if (i === 0) {
+        bodyRows += '<td rowspan="' + n + '" style="padding:5px 8px;border:1px solid #d0d7de;vertical-align:top;font-weight:700">' + escHtml(pt.name) + '様</td>';
+      }
+      bodyRows += '<td style="padding:5px 8px;border:1px solid #d0d7de;vertical-align:top">' + sr.label + '</td>'
+        + '<td style="padding:5px 8px;border:1px solid #d0d7de;text-align:center;vertical-align:middle">' + standingCell + '</td>'
+        + '<td style="padding:5px 8px;border:1px solid #d0d7de"></td>'
+        + '<td style="padding:5px 8px;border:1px solid #d0d7de"></td>'
+        + '</tr>';
+    });
+  });
+  // 末尾に手書き用の空行2行
+  for (var i = 0; i < 2; i++) {
+    bodyRows += '<tr>'
+      + '<td style="padding:5px 8px;border:1px solid #d0d7de">&nbsp;</td>'
+      + '<td style="padding:5px 8px;border:1px solid #d0d7de">&nbsp;</td>'
+      + '<td style="padding:5px 8px;border:1px solid #d0d7de">&nbsp;</td>'
+      + '<td style="padding:5px 8px;border:1px solid #d0d7de">&nbsp;</td>'
+      + '<td style="padding:5px 8px;border:1px solid #d0d7de">&nbsp;</td>'
+      + '</tr>';
+  }
+
+  var win = window.open('', '_blank');
+  if (!win) { toast('印刷画面を開けませんでした（ポップアップを許可してください）'); return; }
+  win.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
+    + '<title>残薬報告書 ' + escHtml(checkDateVal) + '</title>'
+    + '<style>'
+    + 'body{font-family:"Hiragino Sans","Yu Gothic UI",sans-serif;font-size:10pt;margin:10mm 12mm;color:#222}'
+    + 'table{width:100%;border-collapse:collapse;font-size:9.5pt;margin-top:10px}'
+    + 'th{padding:4px 8px;border:1px solid #d0d7de;font-weight:600;text-align:left;background:#e8f0f9}'
+    + '.pharm{font-size:9pt;color:#444;text-align:right;margin-top:6px;line-height:1.6}'
+    + '.greeting{font-size:10pt;line-height:1.9;margin-top:14px}'
+    + '.meta{font-size:9.5pt;margin-top:10px}'
+    + '@media print{body{margin:8mm 12mm}button{display:none!important}}'
+    + '</style></head><body>'
+    // アプリに戻るボタン（スマホで新規タブから戻れない問題対策。印刷時は非表示）
+    + '<div style="margin-bottom:10px">'
+    +   '<button onclick="window.close();setTimeout(function(){location.href=\'' + escAttrJs(appUrl) + '\'},250)" '
+    +     'style="padding:9px 20px;font-size:12pt;background:#fff;color:#1a6fbf;border:2px solid #1a6fbf;border-radius:6px;cursor:pointer">← アプリに戻る</button>'
+    + '</div>'
+    + '<div>' + escHtml(checkWareki) + '</div>'
+    + '<div style="font-size:12pt;font-weight:700;margin-top:6px">' + escHtml(data.hospital.hospitalName) + '御中</div>'
+    + '<div class="pharm">'
+    +   escHtml(STOCK_REPORT_PHARMACY.name) + '<br>'
+    +   escHtml(STOCK_REPORT_PHARMACY.zip) + '　' + escHtml(STOCK_REPORT_PHARMACY.address) + '<br>'
+    +   'TEL：' + escHtml(STOCK_REPORT_PHARMACY.tel) + '　FAX：' + escHtml(STOCK_REPORT_PHARMACY.fax)
+    + '</div>'
+    + '<div class="greeting">'
+    +   '拝啓　時下ますますご清栄のこととお喜び申し上げます。<br>'
+    +   '平素は格別のお引き立てを賜り、誠にありがとうございます。<br>'
+    +   escHtml(data.hospital.facilityName) + ' ご入居者様の処方についてご連絡です。<br>'
+    +   '下記処方薬について残薬を確認しております。<br>'
+    +   'つきましては、用量に変更がなければ、<br>'
+    +   '次回ご処方の際は「処方必要数」に記載の本数ご処方お願いいたします。<br>'
+    +   '※施設様ご希望の処方数がございましたら、そちらを優先ください。'
+    + '</div>'
+    + '<div class="meta">在庫確認日：' + escHtml(checkWareki) + '　往診予定日：' + escHtml(visitWareki) + '</div>'
+    + '<table>'
+    +   '<thead><tr>'
+    +     '<th style="width:14%">氏名</th>'
+    +     '<th style="width:38%">薬品名（1日使用量）【1本日数】</th>'
+    +     '<th style="width:10%;text-align:center">定数</th>'
+    +     '<th style="width:18%">在庫数</th>'
+    +     '<th style="width:20%">処方必要数</th>'
+    +   '</tr></thead>'
+    +   '<tbody>' + bodyRows + '</tbody>'
+    + '</table>'
+    + '<div style="margin-top:14px;text-align:center">'
+    +   '<button onclick="window.print()" style="padding:10px 36px;font-size:13pt;background:#1a6fbf;color:#fff;border:none;border-radius:6px;cursor:pointer">🖨 印刷する</button>'
+    + '</div>'
+    + '</body></html>');
+  win.document.close();
+}
+
+// ============================================================
 // 一括残数 過去の記録（日付グループ一覧）
 // ============================================================
 var _bulkHistoryGroups = []; // 読み込んだグループデータを保持
@@ -4638,6 +4976,7 @@ var MASTER_DEF = {
       { key: '空打ち単位数',   label: '空打ち単位数（1回あたり・なければ空欄）', type: 'number', required: false },
       { key: '使用頻度',       label: '使用頻度（固定の場合）', type: 'select', required: false, options: ['', '毎日', '週2回', '週1回', '月1回'] },
       { key: '1日回数',        label: '1日回数（固定の場合）', type: 'number', required: false },
+      { key: '針不要',         label: '針不要（オートインジェクター等）', type: 'select', required: false, options: ['不要'] },
     ],
     rowLabel: function(r) {
       var base = r['薬品名'] + '　' + (r['種類'] || '') + '  1本' + (r['1本容量'] || '-') + '単位 / 開封後' + (parseInt(r['開封後有効日数']) >= 999 ? '期限なし' : (r['開封後有効日数'] || '-') + '日');
