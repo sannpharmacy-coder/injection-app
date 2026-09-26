@@ -2702,6 +2702,7 @@ function openLogModal(prescriptionId, action, medicineName, capacity, curDailyAm
   }
   onLogActionChange();
   resetLogPhoto();
+  _logModalGen++;
   openModal('logModal');
 }
 
@@ -2969,6 +2970,8 @@ function stepLogStock(delta) {
 }
 
 var _logSubmitting = false;
+// 記録モーダルを開いた回数。保存中に別の処方で開き直した入力を、先の保存完了で閉じないために使う。
+var _logModalGen = 0;
 // 二重送信ガード（通信中の連打で同じ登録が重複するのを防ぐ。進捗バーとは別で、
 // _pg.depthは操作を区別しないため兼用しない）。各関数の入口で判定し、finallyで戻す。
 var _editLogSubmitting = false;
@@ -2992,6 +2995,7 @@ async function submitLog() {
   // 保存開始時の写真世代を固定する。保存中の差し替え・モーダルを閉じる操作が、
   // この記録に添付する写真を片付けないようにする。
   var up = logPhotoUpload;
+  var gen = _logModalGen;
 
   var prescriptionId = document.getElementById('logPrescriptionId').value;
   var action         = document.getElementById('logAction').value;
@@ -3053,7 +3057,8 @@ async function submitLog() {
     if (photoFailed) toast('写真の保存に失敗しました（記録は保存しました）');
     // 保存中に写真を差し替えた場合、その新しい世代は次の入力として残す。
     // closeModal は resetLogPhoto を呼ぶため、保存対象以外を消さないよう直接閉じる。
-    if (logPhotoUpload === up) closeModal('logModal');
+    if (gen !== _logModalGen) { /* 別の入力で開き直されているので閉じない */ }
+    else if (logPhotoUpload === up) closeModal('logModal');
     else document.getElementById('logModal').classList.remove('open');
     if (currentPatient) {
       if (addRes && addRes.prescriptions) {
@@ -3611,7 +3616,7 @@ function readBulkPhotoFile(file) {
       bulkPhotoBase64 = canvas.toDataURL('image/jpeg', 0.82);
       discardPhotoUpload(bulkPhotoUpload);
       bulkPhotoUpload = createPhotoUpload(bulkPhotoBase64,
-        'bulk_' + document.getElementById('bulkDate').value + '_' + Date.now() + '.jpg', 'bulkPhotoUploadStatus');
+        'bulk_' + Date.now() + '.jpg', 'bulkPhotoUploadStatus');
       document.getElementById('bulkPhotoImg').src = bulkPhotoBase64;
       document.getElementById('bulkPhotoPlaceholder').style.display = 'none';
       document.getElementById('bulkPhotoPreview').style.display = '';
