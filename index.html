@@ -511,6 +511,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
               <span style="font-size:12px;color:#2e7d32;font-weight:600">✓ 写真選択済み（全患者に添付）</span>
               <button onclick="clearBulkPhoto(event)" style="font-size:11px;color:#c62828;background:none;border:none;cursor:pointer;padding:0">✕ 削除</button>
             </div>
+            <div id="bulkPhotoUploadStatus" style="font-size:11px;color:var(--gray-500);margin-top:4px"></div>
           </div>
         </div>
       </div>
@@ -707,6 +708,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
             <span style="font-size:12px;color:#2e7d32;font-weight:600">✓ 写真を選択済み</span>
             <button onclick="clearLogPhoto(event)" style="font-size:11px;color:#c62828;background:none;border:none;cursor:pointer;padding:0">✕ 削除</button>
           </div>
+          <div id="logPhotoUploadStatus" style="font-size:11px;color:var(--gray-500);margin-top:4px"></div>
         </div>
       </div>
     </div>
@@ -1656,7 +1658,7 @@ function safeDriveUrl(u) {
 // 書き込み系は二重登録防止のため自動リトライしない（既存の二重送信ガードと整合）。
 const WRITE_ACTIONS_FRONT = {
   addLog: 1, addBulkLogs: 1, addBulkReceipts: 1, addVisitPlan: 1, updateLog: 1, deleteLog: 1,
-  updatePrescription: 1, addPrescription: 1, uploadPhoto: 1,
+  updatePrescription: 1, addPrescription: 1, uploadPhoto: 1, deletePhoto: 1,
   addMaster: 1, updateMaster: 1, deleteMaster: 1, setSettings: 1,
   setPatientNeedleName: 1,
 };
@@ -2791,6 +2793,59 @@ function onLogActionChange() {
 // 写真アップロード
 // ============================================================
 var logPhotoBase64 = null; // 選択中の写真データ
+var logPhotoUpload = null;
+
+// 写真は選択直後に送信し、不要になった世代だけを後片付けする。
+function createPhotoUpload(base64, fileName, statusId) {
+  var state = { base64: base64, fileName: fileName, result: null, failed: false, used: false, reserved: false, discarded: false };
+  setPhotoUploadStatus(statusId, '写真を送信中…');
+  state.promise = api('uploadPhoto', null, { base64: base64, fileName: fileName }).then(function(res) {
+    if (!res || !res.url || !res.fileId) throw new Error('写真の送信に失敗しました');
+    state.result = res;
+    if (state.discarded && !state.used) discardPhotoUpload(state);
+    else setPhotoUploadStatus(statusId, '写真を送信済み');
+    state.settled = true;
+    return res;
+  }).catch(function() {
+    state.failed = true;
+    state.settled = true;
+    if (!state.discarded) setPhotoUploadStatus(statusId, '写真の送信に失敗（保存時にもう一度送ります）');
+    return null;
+  });
+  return state;
+}
+function setPhotoUploadStatus(id, text) {
+  var el = document.getElementById(id); if (el) el.textContent = text || '';
+}
+function discardPhotoUpload(state) {
+  if (!state || state.used || state.reserved) return;
+  state.discarded = true;
+  if (state.result && state.result.fileId && !state.deleteRequested) {
+    state.deleteRequested = true;
+    var fileId = state.result.fileId;
+    state.result = null;
+    api('deletePhoto', null, { fileId: fileId }).catch(function() {});
+  } else if (state.promise && !state.deleteRequested && !state.settled) {
+    state.promise.then(function() { discardPhotoUpload(state); });
+  }
+}
+async function photoUrlForSave(state, statusId) {
+  if (!state) return '';
+  if (state.promise && !state.result && !state.failed) {
+    setPhotoUploadStatus(statusId, '写真を保存しています…');
+    await state.promise;
+  }
+  if (state.result && state.result.url) return state.result.url;
+  // 先行送信に失敗した場合だけ、保存時に1回だけ送り直す。
+  if (!state.retried) {
+    state.retried = true;
+    try {
+      var res = await api('uploadPhoto', null, { base64: state.base64, fileName: state.fileName });
+      if (res && res.url && res.fileId) { state.result = res; state.failed = false; setPhotoUploadStatus(statusId, '写真を送信済み'); return res.url; }
+    } catch (e) {}
+  }
+  return '';
+}
 
 function onLogPhotoSelected(input) {
   if (!input.files || !input.files[0]) return;
@@ -2820,6 +2875,9 @@ function readPhotoFile(file) {
       canvas.width = w; canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
       logPhotoBase64 = canvas.toDataURL('image/jpeg', 0.82);
+      discardPhotoUpload(logPhotoUpload);
+      logPhotoUpload = createPhotoUpload(logPhotoBase64,
+        'log_' + document.getElementById('logPrescriptionId').value + '_' + Date.now() + '.jpg', 'logPhotoUploadStatus');
       document.getElementById('logPhotoImg').src = logPhotoBase64;
       document.getElementById('logPhotoPlaceholder').style.display = 'none';
       document.getElementById('logPhotoPreview').style.display = '';
@@ -2832,6 +2890,7 @@ function readPhotoFile(file) {
 function clearLogPhoto(event) {
   event.stopPropagation();
   logPhotoBase64 = null;
+  discardPhotoUpload(logPhotoUpload); logPhotoUpload = null;
   document.getElementById('logPhotoInput').value = '';
   document.getElementById('logPhotoImg').src = '';
   document.getElementById('logPhotoPlaceholder').style.display = '';
@@ -2839,7 +2898,9 @@ function clearLogPhoto(event) {
 }
 
 function resetLogPhoto() {
+  discardPhotoUpload(logPhotoUpload); logPhotoUpload = null;
   logPhotoBase64 = null;
+  setPhotoUploadStatus('logPhotoUploadStatus', '');
   var inp = document.getElementById('logPhotoInput');
   if (inp) inp.value = '';
   var img = document.getElementById('logPhotoImg');
@@ -2897,6 +2958,9 @@ var _visitCalcRequestGen = 0;
 async function submitLog() {
   // 二重送信ガード: 連打・二度押しで同じログが重複記録されるのを防ぐ
   if (_logSubmitting) return;
+  // 保存開始時の写真世代を固定する。保存中の差し替え・モーダルを閉じる操作が、
+  // この記録に添付する写真を片付けないようにする。
+  var up = logPhotoUpload;
 
   var prescriptionId = document.getElementById('logPrescriptionId').value;
   var action         = document.getElementById('logAction').value;
@@ -2938,31 +3002,28 @@ async function submitLog() {
   var submitBtn = document.getElementById('logSubmitBtn');
   if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '記録中...'; }
 
-  var pg = progressStart(logPhotoBase64 ? '写真を保存しています…' : '記録しています…');
+  var pg = progressStart(up ? '写真を保存しています…' : '記録しています…');
   try {
-    // 写真がある場合はまずアップロードしてURLを取得
-    if (logPhotoBase64) {
-      try {
-        var photoRes = await api('uploadPhoto', null, {
-          base64: logPhotoBase64,
-          fileName: 'log_' + prescriptionId + '_' + Date.now() + '.jpg'
-        });
-        if (photoRes && photoRes.url) {
-          body.photoUrl = photoRes.url;
-        }
-      } catch(photoErr) {
-        console.warn('写真アップロード失敗:', photoErr);
-        // 写真失敗でもログ記録は続行
-      }
+    var photoFailed = false;
+    // 写真がある場合は選択時の送信完了を待つ。失敗時のみ1回再送する。
+    if (up) {
+      up.reserved = true;
+      body.photoUrl = await photoUrlForSave(up, 'logPhotoUploadStatus');
+      photoFailed = !body.photoUrl;
       progressStep(pg, '記録しています…');
     }
     // returnPrescriptions:true で、登録後の処方一覧をこの応答に同梱してもらい、
     // 別途getPrescriptionsを呼ぶ往復を省く
     body.returnPrescriptions = true;
     var addRes = await api('addLog', null, body);
+    if (up) up.used = true;
     invalidateAlertCache(); // 在庫変更のためアラートを再取得
     toast('✓ ' + action + 'を記録しました');
-    closeModal('logModal');
+    if (photoFailed) toast('写真の保存に失敗しました（記録は保存しました）');
+    // 保存中に写真を差し替えた場合、その新しい世代は次の入力として残す。
+    // closeModal は resetLogPhoto を呼ぶため、保存対象以外を消さないよう直接閉じる。
+    if (logPhotoUpload === up) closeModal('logModal');
+    else document.getElementById('logModal').classList.remove('open');
     if (currentPatient) {
       if (addRes && addRes.prescriptions) {
         renderPatientDetail(currentPatient, addRes.prescriptions);
@@ -2975,6 +3036,12 @@ async function submitLog() {
       }
     }
   } catch(e) {
+    // サーバーが明示的に失敗を返したときだけ予約を戻す。通信断等は保存済みか
+    // 判定できないため、写真を残して記録に付いた写真の削除を防ぐ。
+    if (up && e && e.noRetry) {
+      up.reserved = false;
+      if (up !== logPhotoUpload) discardPhotoUpload(up);
+    }
     progressFail(pg);
     toast('エラー: ' + e.message);
   } finally {
@@ -3374,6 +3441,7 @@ async function submitAddPrescription() {
 // 一括残数確認ページ
 // ============================================================
 var bulkPhotoBase64 = null;
+var bulkPhotoUpload = null;
 
 function initBulkPage() {
   document.getElementById('bulkDate').value = todayStr();
@@ -3510,6 +3578,9 @@ function readBulkPhotoFile(file) {
       canvas.width = w; canvas.height = h;
       canvas.getContext('2d').drawImage(img, 0, 0, w, h);
       bulkPhotoBase64 = canvas.toDataURL('image/jpeg', 0.82);
+      discardPhotoUpload(bulkPhotoUpload);
+      bulkPhotoUpload = createPhotoUpload(bulkPhotoBase64,
+        'bulk_' + document.getElementById('bulkDate').value + '_' + Date.now() + '.jpg', 'bulkPhotoUploadStatus');
       document.getElementById('bulkPhotoImg').src = bulkPhotoBase64;
       document.getElementById('bulkPhotoPlaceholder').style.display = 'none';
       document.getElementById('bulkPhotoPreview').style.display = '';
@@ -3521,6 +3592,8 @@ function readBulkPhotoFile(file) {
 function clearBulkPhoto(event) {
   event.stopPropagation();
   bulkPhotoBase64 = null;
+  discardPhotoUpload(bulkPhotoUpload); bulkPhotoUpload = null;
+  setPhotoUploadStatus('bulkPhotoUploadStatus', '');
   document.getElementById('bulkPhotoInput').value = '';
   document.getElementById('bulkPhotoImg').src = '';
   document.getElementById('bulkPhotoPlaceholder').style.display = '';
@@ -4049,6 +4122,8 @@ async function refreshBulkHistoryDetail(groupIdx) {
 
 async function submitBulkStock() {
   if (!window._bulkPatients || !window._bulkPatients.length) { toast('データがありません'); return; }
+  // 保存開始時の写真世代を固定する（記録モーダルと同じ競合対策）。
+  var up = bulkPhotoUpload;
 
   var date = document.getElementById('bulkDate').value;
   if (!date) { toast('実施日を入力してください'); return; }
@@ -4086,26 +4161,25 @@ async function submitBulkStock() {
   // 写真アップロードと一括登録を1つのtryで囲む（間で例外が出ても進捗バーが必ず閉じるように）
   var pg = progressStart(logs.length + '件を登録しています…');
   try {
-    // 写真アップロード
+    // 写真は選択時に送信済み。未完了なら待ち、失敗時だけ1回再送する。
     var photoUrl = '';
-    if (bulkPhotoBase64) {
-      try {
-        progressStep(pg, '写真を保存しています…');
-        var photoRes = await api('uploadPhoto', null, {
-          base64: bulkPhotoBase64,
-          fileName: 'bulk_' + date + '_' + Date.now() + '.jpg'
-        });
-        if (photoRes && photoRes.url) photoUrl = photoRes.url;
-      } catch(e) { console.warn('写真アップロード失敗:', e); }
+    var photoFailed = false;
+    if (up) {
+      progressStep(pg, '写真を保存しています…');
+      up.reserved = true;
+      photoUrl = await photoUrlForSave(up, 'bulkPhotoUploadStatus');
+      photoFailed = !photoUrl;
       progressStep(pg, logs.length + '件を登録しています…');
     }
 
     // 一括登録
     var result = await api('addBulkLogs', null, { logs: logs, photoUrl: photoUrl });
+    if (up) up.used = true;
     invalidateAlertCache(); // 在庫変更のためアラートを再取得
     var ok = result.results ? result.results.filter(function(r){ return r.success; }).length : 0;
     var ng = result.results ? result.results.filter(function(r){ return !r.success; }).length : 0;
     toast('✓ ' + ok + '件登録完了' + (ng ? ' / ' + ng + '件失敗' : ''));
+    if (photoFailed) toast('写真の保存に失敗しました（記録は保存しました）');
     // リセット
     document.getElementById('bulkStockList').innerHTML = '';
     document.getElementById('bulkPhotoSection').style.display = 'none';
@@ -4113,6 +4187,11 @@ async function submitBulkStock() {
     clearBulkPhoto({ stopPropagation: function(){} });
     window._bulkPatients = null;
   } catch(e) {
+    // 通信失敗時は結果不明なので予約のまま残す（写真の誤削除を避ける）。
+    if (up && e && e.noRetry) {
+      up.reserved = false;
+      if (up !== bulkPhotoUpload) discardPhotoUpload(up);
+    }
     progressFail(pg);
     toast('エラー: ' + e.message);
   } finally {
@@ -5504,10 +5583,13 @@ async function deleteMasterRow() {
 // モーダル制御
 // ============================================================
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
-function closeModal(id) { document.getElementById(id).classList.remove('open'); }
+function closeModal(id) {
+  if (id === 'logModal') resetLogPhoto();
+  document.getElementById(id).classList.remove('open');
+}
 document.querySelectorAll('.modal-overlay').forEach(function(el) {
   el.addEventListener('click', function(e) {
-    if (e.target === this) this.classList.remove('open');
+    if (e.target === this) closeModal(this.id);
   });
 });
 </script>
