@@ -1702,6 +1702,33 @@ function _commLogAppend(entry) {
   } catch (e) { /* 記録失敗は無視（本体機能に影響させない） */ }
 }
 
+// サーバは perf=1 のとき { __perf, data } で包んで返す（旧サーバは包まない）。
+function _unwrapPerf(data, meta) {
+  if (data && typeof data === 'object' && !Array.isArray(data) && data.__perf
+      && Object.prototype.hasOwnProperty.call(data, 'data')) {
+    if (meta) meta.perf = data.__perf;
+    return data.data;
+  }
+  return data;
+}
+
+// 段階の印（開始からの経過ms）を前の印との差に直して1行にする。
+// ロック待ちと合計はもともと長さなのでそのまま出す。
+function _formatServerPerf(perf) {
+  if (!perf || !perf.ms) return '';
+  var ms = perf.ms;
+  var parts = ['サーバ ' + (Number(ms['合計']) || 0) + 'ms'];
+  if (ms['ロック待ち']) parts.push('ロック待ち ' + (Number(ms['ロック待ち']) || 0));
+  var prev = 0;
+  Object.keys(ms).filter(function(k) { return k !== '合計' && k !== 'ロック待ち'; })
+    .sort(function(a, b) { return (Number(ms[a]) || 0) - (Number(ms[b]) || 0); })
+    .forEach(function(k) { parts.push(escHtml(k) + ' +' + ((Number(ms[k]) || 0) - prev)); prev = Number(ms[k]) || 0; });
+  var sheets = (perf.sheets || []).map(function(s) {
+    return escHtml(s.sheet) + (s.cacheHit ? ' キャッシュ' : ' ' + (Number(s.ms) || 0) + 'ms/' + (Number(s.rows) || 0) + '行');
+  });
+  return parts.join(' / ') + (sheets.length ? '<br>読込: ' + sheets.join(' / ') : '');
+}
+
 function getCommLog() {
   try {
     var raw = localStorage.getItem(COMM_LOG_KEY);
@@ -1728,6 +1755,7 @@ function renderCommLog() {
     var mark = entry.ok ? (entry.retried ? '⟳' : '✓') : '✗';
     var line = hm + ' ' + mark + ' ' + escHtml(entry.action) + ' — ' + entry.ms + 'ms';
     if (!entry.ok && entry.error) line += '<br><span style="margin-left:62px;color:#c62828">' + escHtml(entry.error) + '</span>';
+    if (entry.srv) line += '<div style="margin-left:62px;color:var(--gray-500);font-size:11px;line-height:1.5">' + _formatServerPerf(entry.srv) + '</div>';
     return '<div style="color:' + color + '">' + line + '</div>';
   }).join('');
 }
@@ -1764,11 +1792,11 @@ function _releaseApiSlot() {
 }
 
 // 枠を取ってから実際の通信を行う。枠は通信中だけ握る（呼び出し側の処理中は握らない）。
-async function _apiRequestQueued(action, params, body) {
+async function _apiRequestQueued(action, params, body, meta) {
   var wait = _acquireApiSlot();
   if (wait) await wait;
   try {
-    return await _apiRequest(action, params, body);
+    return await _apiRequest(action, params, body, meta);
   } finally {
     _releaseApiSlot();
   }
@@ -1781,9 +1809,10 @@ var RETRY_MAX_ELAPSED_MS = 15000;
 async function api(action, params, body) {
   var t0 = Date.now();
   var isWrite = !!WRITE_ACTIONS_FRONT[action];
+  var meta = {};
   try {
-    var data = await _apiRequestQueued(action, params, body);
-    _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true });
+    var data = await _apiRequestQueued(action, params, body, meta);
+    _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true, srv: meta.perf });
     // 在庫・処方・マスタを変えたらアラートは作り直す。
     // 世代も進むので、飛んでいる途中の古い取得が後から書き戻すこともない。
     if (ALERT_AFFECTING_ACTIONS[action]) invalidateAlertCache();
@@ -1796,8 +1825,8 @@ async function api(action, params, body) {
     // 書き込み系はもちろん、読み取り系でも無駄な二重リクエストになるだけのため）。
     if (!isWrite && !e.noRetry && (Date.now() - t0) < RETRY_MAX_ELAPSED_MS) {
       try {
-        var data2 = await _apiRequestQueued(action, params, body);
-        _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true, retried: true });
+        var data2 = await _apiRequestQueued(action, params, body, meta);
+        _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: true, retried: true, srv: meta.perf });
         return data2;
       } catch (e2) {
         _commLogAppend({ ts: t0, action: action, ms: Date.now() - t0, ok: false, error: e2.message, retried: true });
@@ -1809,7 +1838,7 @@ async function api(action, params, body) {
   }
 }
 
-async function _apiRequest(action, params, body) {
+async function _apiRequest(action, params, body, meta) {
   GAS_URL = getGasUrl();
   if (!GAS_URL) {
     document.getElementById('setupOverlay').classList.add('open');
@@ -1820,6 +1849,7 @@ async function _apiRequest(action, params, body) {
   url.searchParams.set('action', action);
   url.searchParams.set('pin', getPin());  // 認証用PIN（GET/POST共通でクエリに付与）
   url.searchParams.set('_', Date.now());  // キャッシュ無効化（GASのGET応答が古いまま返る問題対策）
+  url.searchParams.set('perf', '1');      // サーバの段階別計測を通信ログに出す（_unwrapPerf参照）
   Object.keys(params).forEach(function(k) { url.searchParams.set(k, params[k]); });
 
   // 写真アップロードなど大きなデータはPOSTで送る
@@ -1862,6 +1892,7 @@ async function _apiRequest(action, params, body) {
     }
     throw new Error('サーバーから不正な応答が返りました。GASのデプロイ設定（アクセス権／最新版）を確認してください。');
   }
+  data = _unwrapPerf(data, meta);
   if (data && data.error === 'unauthorized') {
     localStorage.removeItem('appPin');
     var ov = document.getElementById('setupOverlay');
