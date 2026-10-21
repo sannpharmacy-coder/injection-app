@@ -382,6 +382,11 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       <p>アプリの動作設定</p>
     </div>
 
+    <!-- PINが短いときの注意（PINはGASのスクリプトプロパティ APP_PIN で変更する） -->
+    <div id="settingsPinWarning" class="card" style="display:none;margin-top:16px;background:#fff3e0;border:1px solid #ffb74d;font-size:13px;line-height:1.7;color:#e65100">
+      ⚠ PINが8桁未満です。総当たりに強くするため、管理者はGASのスクリプトプロパティ <b>APP_PIN</b> を8桁以上に変更してください。
+    </div>
+
     <!-- 往診の必要本数 設定 -->
     <div class="card" style="margin-top:16px">
       <div style="font-size:15px;font-weight:700;margin-bottom:12px">🚑 往診の必要本数</div>
@@ -610,7 +615,8 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
     <p>このアプリを使うにはPINを入力してください。</p>
     <div class="form-group">
       <label>PIN</label>
-      <input type="password" id="setupPin" inputmode="numeric" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-size:16px" onkeydown="if(event.key==='Enter')savePinFromSetup()">
+      <input type="password" id="setupPin" inputmode="numeric" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" style="font-size:16px" oninput="updatePinLengthWarning(this.value, 'setupPinWarning')" onkeydown="if(event.key==='Enter')savePinFromSetup()">
+      <div id="setupPinWarning" style="display:none;color:#e65100;font-size:12px;margin-top:5px">8桁以上を推奨します</div>
     </div>
     <button class="btn btn-primary btn-full" onclick="savePinFromSetup()" style="margin-bottom:12px">ログイン</button>
     <div style="background:#fff8e1;border-radius:8px;padding:12px;font-size:12px;line-height:1.7">
@@ -845,14 +851,23 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       <label>備考（任意）</label>
       <textarea id="editLogMemo" rows="2" placeholder="メモ"></textarea>
     </div>
-    <!-- 写真リンク（記録時に添付された写真） -->
+    <!-- 添付写真（記録時に添付された写真） -->
     <div id="editLogPhotoArea" style="display:none;margin-bottom:14px">
-      <a id="editLogPhotoLink" href="#" target="_blank" rel="noopener"
-         style="display:inline-flex;align-items:center;gap:6px;font-size:14px;color:#1a6fbf;background:#e3f2fd;padding:8px 14px;border-radius:8px;text-decoration:none;font-weight:600">
-        📷 添付写真を開く（Googleドライブ）
-      </a>
+      <button id="editLogPhotoLink" type="button" onclick="openPhotoViewer(this.dataset.photoUrl)"
+         style="display:inline-flex;align-items:center;gap:6px;font-size:14px;color:#1a6fbf;background:#e3f2fd;border:0;padding:8px 14px;border-radius:8px;font-weight:600">
+        📷 添付写真を見る
+      </button>
     </div>
     <button class="btn btn-primary btn-full" onclick="submitEditLog()">変更を保存</button>
+  </div>
+</div>
+
+<!-- 非公開写真の表示 -->
+<div class="modal-overlay" id="photoViewerModal">
+  <div class="modal" style="max-width:720px">
+    <div class="modal-title"><span>添付写真</span><button onclick="closeModal('photoViewerModal')">&#215;</button></div>
+    <div id="photoViewerStatus" style="padding:18px;text-align:center;color:#607d8b">写真を取得しています…</div>
+    <img id="photoViewerImage" alt="添付写真" style="display:none;width:100%;max-height:70vh;object-fit:contain">
   </div>
 </div>
 
@@ -1216,7 +1231,7 @@ async function submitSetupDs() {
   try {
     var res = null;
     if (same) {
-      await api('updatePrescription', null, { prescriptionId: pid, schedule: ds.schedule });
+      res = await api('updatePrescription', null, { prescriptionId: pid, schedule: ds.schedule, returnPrescriptions: true });
     } else {
       res = await api('addLog', null, { prescriptionId: pid, action: '用量変更', date: todayStr(), memo: '用量スケジュール設定',
         newSchedule: ds.schedule, returnPrescriptions: true });
@@ -1280,20 +1295,21 @@ function saveGasUrl() {
 async function savePinFromSetup() {
   var val = (document.getElementById('setupPin').value || '').trim();
   if (!val) { toast('PINを入力してください'); return; }
+  updatePinLengthWarning(val, 'setupPinWarning');
   localStorage.setItem('appPin', val);
   try {
-    await api('ping');  // PINが正しいか検証
+    await initApp(true);  // getInitでPIN検証と初期化を兼ねる
     document.getElementById('setupOverlay').classList.remove('open');
     toast('ログインしました ✓', 2000);
-    // 個別のloadAllPatients()+loadAlerts()ではなく、initApp()に一本化する
-    // （チーフレビュー2巡目: 初回ログイン後も患者一覧・アラート・設定・病院一覧を
-    // getInit 1回でまとめて取得する。DOMContentLoaded時点でPIN保有済みだった
-    // 場合の初期化経路と同じ関数を通ることで、二重の初期化ロジックを持たない）。
-    initApp();
   } catch(e) {
-    localStorage.removeItem('appPin');
+    if (!e.isLockError) localStorage.removeItem('appPin');
     toast(e.message || 'PINが正しくありません');
   }
+}
+
+function updatePinLengthWarning(value, warningId) {
+  var warning = document.getElementById(warningId);
+  if (warning) warning.style.display = String(value || '').trim().length < 8 ? '' : 'none';
 }
 
 function clearGasUrl() {
@@ -1651,6 +1667,36 @@ function safeDriveUrl(u) {
   return raw;
 }
 
+function photoButtonHtml(url, label) {
+  var safe = safeDriveUrl(url);
+  if (!safe) return '';
+  return '<button type="button" data-photo-url="' + escHtml(safe) + '" onclick="openPhotoViewer(this.dataset.photoUrl)"'
+    + ' style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#1a6fbf;background:#e3f2fd;border:1px solid #90caf9;padding:7px 14px;border-radius:8px">'
+    + escHtml(label || '📷 添付写真を見る') + '</button>';
+}
+
+async function openPhotoViewer(url) {
+  var safe = safeDriveUrl(url);
+  if (!safe) return;
+  var gen = ++_photoViewerGen;
+  var status = document.getElementById('photoViewerStatus');
+  var image = document.getElementById('photoViewerImage');
+  if (status) { status.textContent = '写真を取得しています…'; status.style.display = ''; }
+  if (image) { image.style.display = 'none'; image.removeAttribute('src'); }
+  openModal('photoViewerModal');
+  try {
+    var photo = await api('getPhoto', { url: safe });
+    if (gen !== _photoViewerGen) return;
+    if (!photo || !photo.base64 || !photo.mimeType) throw new Error('写真を取得できませんでした');
+    if (image) { image.src = 'data:' + photo.mimeType + ';base64,' + photo.base64; image.style.display = ''; }
+    if (status) status.style.display = 'none';
+  } catch (e) {
+    if (gen !== _photoViewerGen) return;
+    if (status) status.textContent = '写真を表示できませんでした: ' + (e.message || '取得エラー');
+  }
+}
+var _photoViewerGen = 0;
+
 // ============================================================
 // API呼び出し
 // ============================================================
@@ -1685,8 +1731,22 @@ const COMM_LOG_MAX = 30;
 //   - 8桁以上の16進: generateId()（UUIDから8桁）やUUIDそのもの
 //   - 4桁以上の連続数字: 生年月日コード(例 350101)・行番号・日付の数字並び
 // 3桁以下は残す（404などのステータスを読めなくしないため）。
+// 通信ログのマスク用に、検索結果などで受け取った患者名を覚えておく（端末のメモリ内だけ）。
+var _knownPatientNames = {};
+function _rememberPatientNames(list) {
+  (Array.isArray(list) ? list : [list]).forEach(function(p) {
+    var name = String((p && p.name) || '').trim();
+    if (name.length >= 2) _knownPatientNames[name] = 1;
+  });
+}
+
 function _scrubForLog(text) {
-  return String(text == null ? '' : text)
+  var out = String(text == null ? '' : text);
+  // 画面が受け取った患者名（_rememberPatientNames）も通信ログへ残さない。
+  Object.keys(_knownPatientNames).sort(function(a, b) { return b.length - a.length; }).forEach(function(name) {
+    out = out.split(name).join('<患者名>');
+  });
+  return out
     .replace(/\b[0-9a-f]{8,}\b/gi, '<ID>')
     .replace(/\d{4,}/g, '<数字>');
 }
@@ -1846,38 +1906,23 @@ async function _apiRequest(action, params, body, meta) {
   }
   params = params || {};
   const url = new URL(GAS_URL);
+  url.search = '';
   url.searchParams.set('action', action);
-  url.searchParams.set('pin', getPin());  // 認証用PIN（GET/POST共通でクエリに付与）
   url.searchParams.set('_', Date.now());  // キャッシュ無効化（GASのGET応答が古いまま返る問題対策）
   url.searchParams.set('perf', '1');      // サーバの段階別計測を通信ログに出す（_unwrapPerf参照）
-  Object.keys(params).forEach(function(k) { url.searchParams.set(k, params[k]); });
-
-  // 写真アップロードなど大きなデータはPOSTで送る
-  // GASはno-corsのためPOSTのレスポンスが読めないので、
-  // フォームエンコードでPOSTしてリダイレクト先のGETでレスポンスを受け取る方式は使えない。
-  // → 代わりに、base64データをチャンクに分けずURLパラメータが8KB以上になる場合はエラーを出す。
-  // 実装: payloadが大きい場合はno-redirect POSTを試みる。
-  // GAS Web App は doPost でも動くが、CORSのためfetchのレスポンスが読めない場合がある。
-  // 解決策: GASにdoPostを追加し、no-corsなしでPOSTできるようにする。
-  // ここでは body が base64 を含む場合は POST（application/x-www-form-urlencoded）を使う。
-  var bodyStr = body ? JSON.stringify(body) : null;
-  var usePOST = bodyStr && bodyStr.length > 4000; // 4KB超はPOST
-
-  let res;
-  if (usePOST) {
-    // POSTで送信（GASのdoPostで受け取る）
-    var formBody = 'action=' + encodeURIComponent(action) + '&payload=' + encodeURIComponent(bodyStr);
-    res = await fetch(url.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: formBody,
-      cache: 'no-store',
-    });
-  } else {
-    // 通常のGETパラメータ方式
-    if (bodyStr) url.searchParams.set('payload', bodyStr);
-    res = await fetch(url.toString(), { method: 'GET', cache: 'no-store' });
-  }
+  // PIN・検索条件・業務データはすべてフォーム本文へ入れる。URLには action / _ / perf
+  // だけを残し、履歴・プロキシ・通信ログに機微な値を載せない。
+  var form = new URLSearchParams();
+  form.set('action', action);
+  form.set('pin', getPin());
+  Object.keys(params).forEach(function(k) { form.set(k, params[k]); });
+  if (body) form.set('payload', JSON.stringify(body));
+  let res = await fetch(url.toString(), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: form.toString(),
+    cache: 'no-store',
+  });
 
   // GAS がエラー時に HTML（権限エラー画面など）を返すことがある。res.json() を
   // そのまま呼ぶと "Unexpected token <" という分かりにくいエラーになるので、
@@ -1902,6 +1947,12 @@ async function _apiRequest(action, params, body, meta) {
     errAuth.isAuthError = true; // 呼び出し元(initApp等)が個別フォールバックを止めるための判定に使う
     throw errAuth;
   }
+  if (data && data.error === 'locked') {
+    var errLock = new Error('PINの誤入力が続いたため10分間ロックされています。時間をおいて再度お試しください。');
+    errLock.noRetry = true;
+    errLock.isLockError = true;
+    throw errLock;
+  }
   if (data && data.error) {
     var errBiz = new Error(data.error);
     errBiz.noRetry = true; // サーバーが返した業務エラーは再試行しても同じ結果になる
@@ -1924,7 +1975,7 @@ function showPage(page) {
   if (page === 'search')   { renderSearchPrompt(); loadAlerts(); }
   if (page === 'visit')    { loadHospitals(); setDefaultDates(); }
   if (page === 'bulk')     { loadHospitals().then(function() { initBulkPage(); }); }
-  if (page === 'settings') { initAlertThresholdInputs(); loadVisitSettings(); loadReportSettings(); renderCommLog(); }
+  if (page === 'settings') { updatePinLengthWarning(getPin(), 'settingsPinWarning'); initAlertThresholdInputs(); loadVisitSettings(); loadReportSettings(); renderCommLog(); }
   if (page === 'master')   { loadMasterList(currentMasterTab); }
 }
 
@@ -2202,7 +2253,7 @@ function handleSearchInput(raw) {
 // getInitの応答を待ってから描画する。getInit自体（1リクエストへのまとめ）は維持。
 // ============================================================
 
-async function initApp() {
+async function initApp(throwOnFailure) {
   // initCache_v1の後始末はスクリプト読み込み直後（PIN判定より前）に移動済み。
   // ここでは行わない（チーフレビュー2巡目: PIN未保存の初回セットアップ端末では
   // initApp()自体が呼ばれないため、ここに置いても保証にならなかった）。
@@ -2217,6 +2268,7 @@ async function initApp() {
       dangerDays: t.dangerDays, warningDays: t.warningDays,
       includeAlerts: 'false', includePatients: 'false',
     });
+    var initReceived = true;   // ここ以降の描画の失敗は PIN 不一致ではないので、ログイン時も呼び出し元へ投げない
     renderSearchPrompt();
     if (init.alerts) {
       // 旧バックエンド（includeAlertsを解さない）はアラートを同梱して返す。
@@ -2245,10 +2297,11 @@ async function initApp() {
       loadAlerts();
     }
   } catch(e) {
+    if (throwOnFailure && !initReceived) throw e;
     // PIN不一致(unauthorized)は個別APIを呼んでも同じ理由で必ず失敗する。
     // 無駄な追加リクエストを送らずここで終了する（PIN入力ダイアログは
     // _apiRequest側で既に開いている）。
-    if (e.isAuthError) return;
+    if (e.isAuthError || e.isLockError) return;
     // getInit未対応の旧バックエンド、またはネットワーク不調 → 従来どおり個別取得にフォールバック
     console.warn('getInit失敗:', e.message);
     // 患者一覧は使わないので取りに行かない。検索は都度サーバへ問い合わせる。
@@ -2287,6 +2340,7 @@ async function _doSearchOnce(q) {
   loading('searchResults');
   try {
     var results = await api('searchPatients', { q: q });
+    _rememberPatientNames(results);
     // 自分より後に始まった検索がある。この応答は古いので描かない。
     if (gen !== _searchGen) return;
     renderSearchResults(results);
@@ -2338,6 +2392,7 @@ async function openPatient(patientId) {
       api('getPrescriptions', { patientId: patientId })
     ]);
     currentPatient = results[0];
+    _rememberPatientNames(currentPatient);
     renderPatientDetail(results[0], results[1]);
   } catch(e) {
     document.getElementById('patientContent').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
@@ -3106,7 +3161,9 @@ async function showHistory(prescriptionId, medicineType) {
   }
 }
 
+var currentHistoryLogs = [];
 function renderHistory(logs) {
+  currentHistoryLogs = logs || [];
   var historyIsInhaler = currentHistoryIsInhaler; // 吸入薬は1日回数を表示しない
   if (!logs || !logs.length) {
     document.getElementById('historyContent').innerHTML = '<div class="empty-state">記録がありません</div>';
@@ -3147,7 +3204,7 @@ function renderHistory(logs) {
       + (l.needleCount ? '<div style="font-size:13px;color:#9aa5b4">針: ' + escHtml(l.needleCount) + ' 本</div>' : '')
       + (l.depletionDate && l.depletionDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">枯渇予定: ' + escHtml(l.depletionDate) + '</div>' : '')
       + (l.memo ? '<div style="font-size:13px;color:#9aa5b4;margin-top:4px">📝 ' + escHtml(l.memo) + '</div>' : '')
-      + (safeDriveUrl(l.photoUrl) ? '<div style="margin-top:8px"><a href="' + escHtml(safeDriveUrl(l.photoUrl)) + '" target="_blank" rel="noopener" style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#1a6fbf;background:#e3f2fd;border:1px solid #90caf9;padding:7px 14px;border-radius:8px;text-decoration:none">📷 添付写真を開く（Googleドライブ）</a></div>' : '')
+      + (safeDriveUrl(l.photoUrl) ? '<div style="margin-top:8px">' + photoButtonHtml(l.photoUrl) + '</div>' : '')
       + '<div style="display:flex;gap:6px;margin-top:8px">'
       + '<button class="btn btn-outline btn-sm" style="font-size:11px;padding:4px 10px" onclick="openEditLogModal(\'' + lid + '\')">変更</button>'
       + '<button class="btn btn-sm" style="font-size:11px;padding:4px 10px;background:#ffebee;color:#c62828;border:1px solid #ffcdd2" onclick="deleteLog(\'' + lid + '\')">削除</button>'
@@ -3160,7 +3217,11 @@ async function openEditLogModal(logId) {
   // 履歴モーダルを先に閉じる
   closeModal('historyModal');
   try {
-    var log = await api('getLog', { logId: logId });
+    var log = currentHistoryLogs.find(function(l) { return String(l.logId) === String(logId); });
+    // 旧バックエンドの一覧に編集用項目がない場合だけ個別取得する。
+    if (!log || ['capacity', 'currentSchedule', 'primingUnits'].some(function(k) { return log[k] === undefined; })) {
+      log = await api('getLog', { logId: logId });
+    }
     document.getElementById('editLogId').value = logId;
     document.getElementById('editLogDate').value = (log.date || '').replace(/\//g, '-');
     document.getElementById('editLogMemo').value = log.memo || '';
@@ -3197,7 +3258,7 @@ async function openEditLogModal(logId) {
     var photoLink = document.getElementById('editLogPhotoLink');
     var editPhotoHref = safeDriveUrl(log.photoUrl);
     if (editPhotoHref && photoArea && photoLink) {
-      photoLink.href = editPhotoHref;
+      photoLink.dataset.photoUrl = editPhotoHref;
       photoArea.style.display = '';
     } else if (photoArea) {
       photoArea.style.display = 'none';
@@ -3771,10 +3832,12 @@ async function onStockReportOverrideChange(prescriptionId) {
     body.fixedStockCount = n;
   }
   try {
+    var hospitalId = document.getElementById('bulkHospitalId').value;
+    body.returnStockReport = true;
+    body.hospitalId = hospitalId;
     var res = await api('updatePrescription', null, body);
     if (res && res.error) { toast('保存失敗: ' + res.error); return; }
-    var hospitalId = document.getElementById('bulkHospitalId').value;
-    var data = await api('getStockReport', { hospitalId: hospitalId });
+    var data = res && res.stockReport ? res.stockReport : await api('getStockReport', { hospitalId: hospitalId });
     if (data && data.error) { toast('取得失敗: ' + data.error); return; }
     renderStockReportPreview(data);
   } catch (e) {
@@ -3806,10 +3869,10 @@ async function saveStockReportNeedleName(patientId, value) {
   needleName = String(needleName === undefined || needleName === null ? '' : needleName).trim();
   if (!needleName) { toast('針の名称を入力してください'); return; }
   try {
-    var res = await api('setPatientNeedleName', null, { patientId: patientId, needleName: needleName });
-    if (res && res.error) toast('保存失敗: ' + res.error);   // 失敗でも再取得して select をサーバの値に戻す
     var hospitalId = document.getElementById('bulkHospitalId').value;
-    var data = await api('getStockReport', { hospitalId: hospitalId });
+    var res = await api('setPatientNeedleName', null, { patientId: patientId, needleName: needleName, returnStockReport: true, hospitalId: hospitalId });
+    if (res && res.error) toast('保存失敗: ' + res.error);
+    var data = res && res.stockReport ? res.stockReport : await api('getStockReport', { hospitalId: hospitalId });
     if (data && data.error) { toast('取得失敗: ' + data.error); return; }
     renderStockReportPreview(data);
   } catch (e) {
@@ -4002,9 +4065,7 @@ function renderBulkHistoryDetail(g, groupIdx) {
 
   // 共通写真
   var photoHtml = safeDriveUrl(g.photoUrl)
-    ? '<div style="margin-bottom:12px"><a href="' + escHtml(safeDriveUrl(g.photoUrl)) + '" target="_blank" rel="noopener"'
-      + ' style="display:inline-flex;align-items:center;gap:6px;font-size:13px;font-weight:600;color:#1a6fbf;background:#e3f2fd;border:1px solid #90caf9;padding:7px 14px;border-radius:8px;text-decoration:none">'
-      + '📷 共通写真を開く（Googleドライブ）</a></div>'
+    ? '<div style="margin-bottom:12px">' + photoButtonHtml(g.photoUrl, '📷 添付写真を見る') + '</div>'
     : '';
 
   var html = '<div style="padding:12px 16px 0">' + photoHtml;
@@ -5621,6 +5682,7 @@ async function deleteMasterRow() {
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) {
   if (id === 'logModal') resetLogPhoto();
+  if (id === 'photoViewerModal') _photoViewerGen++;
   document.getElementById(id).classList.remove('open');
 }
 document.querySelectorAll('.modal-overlay').forEach(function(el) {
