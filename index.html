@@ -3044,6 +3044,13 @@ var _visitPlanResultGen = 0;
 // 古い要求の応答（成功・失敗いずれも）が、既に表示されている新しい計算結果を
 // 上書きしないようにする（2026-08チーフレビュー対応・指摘#5）。
 var _visitCalcRequestGen = 0;
+function recentReceiptLines(receipts) {
+  return (receipts || []).map(function(r) {
+    return '・' + String(r.date || '').slice(5) + ' 受取 ' + r.bottles + '本'
+      + (r.inputAt ? '（入力 ' + String(r.inputAt).slice(5, 16) + '）' : '');
+  }).join('\n');
+}
+
 async function submitLog() {
   // 二重送信ガード: 連打・二度押しで同じログが重複記録されるのを防ぐ
   if (_logSubmitting) return;
@@ -3106,6 +3113,19 @@ async function submitLog() {
     // 別途getPrescriptionsを呼ぶ往復を省く
     body.returnPrescriptions = true;
     var addRes = await api('addLog', null, body);
+    if (addRes && addRes.needsConfirm === 'recent_receipt') {
+      if (!confirm('この処方は、今回の受取日の前後6日以内に受取が記録されています。\n'
+          + recentReceiptLines(addRes.recentReceipts) + '\n\nそれでも登録しますか？')) {
+        if (up) {
+          up.reserved = false;
+          if (up !== logPhotoUpload) discardPhotoUpload(up);
+        }
+        toast('登録を取りやめました');
+        return;
+      }
+      body.allowRecentReceipt = true;
+      addRes = await api('addLog', null, body);
+    }
     if (up) up.used = true;
     invalidateAlertCache(); // 在庫変更のためアラートを再取得
     toast('✓ ' + action + 'を記録しました');
@@ -4778,12 +4798,33 @@ async function visitBulkRegister() {
   try {
     // 1回のまとめ送信（サーバー側1実行・1ロックで全件処理）。
     // 以前は addLog をN件並列送信していたが、LockServiceで直列化され遅かった。
-    var result = await api('addBulkReceipts', null, {
+    var body = {
       receipts: tasks.map(function(t) {
         return { prescriptionId: t.prescriptionId, bottles: t.bottles, date: t.date };
       }),
       memo: '往診一括登録'
-    });
+    };
+    var result = await api('addBulkReceipts', null, body);
+    if (result && result.needsConfirm === 'recent_receipt') {
+      var medicineNames = {};
+      lastVisitResult.patients.forEach(function(pt) {
+        (pt.prescriptions || []).forEach(function(m) {
+          // 同じ施設で複数の患者が同じ薬を使うため、患者名も添えて区別する
+          medicineNames[m.prescriptionId] = (pt.patientName ? pt.patientName + ' ' : '') + m.medicineName;
+        });
+      });
+      var duplicateLines = (result.duplicates || []).map(function(d) {
+        return (medicineNames[d.prescriptionId] || d.prescriptionId) + '\n'
+          + recentReceiptLines(d.recentReceipts);
+      }).join('\n');
+      if (!confirm('今回の受取日の前後6日以内に受取が記録されている薬品があります。\n'
+          + duplicateLines + '\n\nそれでも一括登録しますか？')) {
+        toast('一括登録を取りやめました（0件登録）');
+        return;
+      }
+      body.allowRecentReceipt = true;
+      result = await api('addBulkReceipts', null, body);
+    }
     var resArr = (result && result.results) ? result.results : [];
     var ok = resArr.filter(function(r) { return r.success; }).length;
     var ng = ((result && result.total) || resArr.length) - ok;
