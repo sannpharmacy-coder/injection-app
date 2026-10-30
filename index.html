@@ -327,34 +327,21 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 /* 残薬報告書 */
 #stockPrintOverlay { position:fixed; inset:0; z-index:300; overflow:auto; background:#e9ecef; }
 .sp-toolbar { position:sticky; top:0; z-index:1; display:flex; justify-content:space-between; padding:12px; padding-top:calc(12px + env(safe-area-inset-top)); background:#fff; border-bottom:1px solid #ccc; }
-#stockPrintSheet { box-sizing:content-box; width:182mm; padding:12mm 14mm; margin:12px auto; background:#fff; box-shadow:0 2px 12px #0003; font-family:"Hiragino Sans","Yu Gothic","Meiryo",sans-serif; font-size:11pt; color:#000; line-height:1.5; }
-#stockPrintSheet .date { text-align:right; }
-#stockPrintSheet .to { font-size:13pt; font-weight:700; border-bottom:1px solid #000; margin-top:6px; }
-#stockPrintSheet .pharm { margin:6px 0 0 auto; width:max-content; font-size:10pt; line-height:1.7; }
-.sp-title { text-align:center; font-size:15pt; font-weight:700; margin:14px 0; }
-#stockPrintSheet .greeting { font-size:10.5pt; line-height:1.8; }
-#stockPrintSheet .indent { margin-left:1em; }
-#stockPrintSheet .meta { display:flex; border:1px solid #000; margin-top:12px; font-size:11pt; }
-#stockPrintSheet .meta span { flex:1; padding:6px; text-align:center; }
-#stockPrintSheet table { width:100%; border-collapse:collapse; table-layout:fixed; margin-top:10px; font-size:11pt; }
-#stockPrintSheet th, #stockPrintSheet td { border:1px solid #000; padding:5px 6px; vertical-align:middle; overflow-wrap:anywhere; }
-#stockPrintSheet th { text-align:center; background:#eee; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
-#stockPrintSheet small, #stockPrintSheet .drug-sub { font-size:9pt; font-weight:400; color:#666; }
-#stockPrintSheet .drug-name { font-weight:700; }
-#stockPrintSheet .name { text-align:center; font-weight:700; }
-#stockPrintSheet .num { text-align:center; font-size:12pt; }
-#stockPrintSheet tbody tr { height:10mm; }
-#stockPrintSheet tr { break-inside:avoid; page-break-inside:avoid; }
-.sp-patient-start > td { border-top-width:2px !important; }
-#stockPrintSheet u { text-decoration:underline; text-underline-offset:2px; }
+#stockPrintHint { font-size:12px; padding:8px 12px; }
+#stockPrintPages { margin:12px auto; max-width:794px; overflow-x:auto; }
+#stockPrintPages .sp-page { display:block; width:100%; height:auto; margin:0 0 16px; background:#fff; box-shadow:0 2px 12px #0003; -webkit-touch-callout:default; }
+#stockPrintPages.sp-zoom .sp-page { width:250%; max-width:none; }
 @media screen { body.sp-printing { overflow:hidden; } }
 @media print {
-  @page { size:A4 portrait; margin:12mm 14mm; }
+  @page { size: A4 portrait; margin: 0 }
   html:has(body.sp-printing), body.sp-printing { background:#fff; height:auto; }
   body.sp-printing > *:not(#stockPrintOverlay) { display:none !important; }
   #stockPrintOverlay { position:static; overflow:visible; background:#fff; }
   #stockPrintOverlay .sp-toolbar { display:none; }
-  #stockPrintSheet { zoom:1 !important; box-shadow:none; margin:0; padding:0; width:auto; }
+  #stockPrintHint { display:none; }
+  #stockPrintPages { margin:0; max-width:none; overflow:visible; }
+  #stockPrintPages .sp-page, #stockPrintPages.sp-zoom .sp-page { width:210mm; height:297mm; display:block; box-shadow:none; margin:0; break-after:page; page-break-after:always; }
+  #stockPrintPages .sp-page:last-child { break-after:auto; page-break-after:auto; }
 }
 </style>
 </head>
@@ -978,8 +965,9 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 <div id="progressLabel" role="status" aria-live="polite"></div>
 <div id="toast"></div>
 <div id="stockPrintOverlay" style="display:none">
-  <div class="sp-toolbar"><button class="btn btn-outline" onclick="closeStockPrint()">← 戻る</button><button class="btn btn-primary" onclick="window.print()">印刷する</button></div>
-  <div id="stockPrintSheet"></div>
+  <div class="sp-toolbar"><button class="btn btn-outline" onclick="closeStockPrint()">← 戻る</button><button id="stockPrintActionBtn" class="btn btn-primary" onclick="stockPrintAction()" disabled>準備中…</button></div>
+  <div id="stockPrintHint"></div>
+  <div id="stockPrintPages"></div>
 </div>
 
 <script>
@@ -3980,101 +3968,253 @@ function toWarekiShort(dateStr) {
   return 'R' + (y - 2018) + '年' + m + '月' + d + '日(' + yobi + ')';
 }
 
-function stockReportPrint() {
-  if (!lastStockReport) return;
-  var data = lastStockReport;
-  var checkDateVal = document.getElementById('stockReportCheckDate').value;
-  var visitDateVal = document.getElementById('stockReportVisitDate').value;
-  var checkWareki = checkDateVal ? toWarekiShort(checkDateVal) : 'R　年　月　日（　）';
-  var visitWareki  = visitDateVal ? toWarekiShort(visitDateVal) : 'R　年　月　日（　）';
-
-  var bodyRows = '';
-  function cell(cls, inner) { return '<td class="' + cls + '">' + inner + '</td>'; }
-  (data.patients || []).forEach(function(pt) {
-    var subRows = (pt.rows || []).map(function(r) {
-      return {
-        label: '<div class="drug-name">' + escHtml(r.medicineName) + '</div><div class="drug-sub">' + escHtml(r.doseText) + '・1本' + escHtml(String(r.perBottleDays)) + '日</div>',
-        standing: r.standing,
-      };
+// @stockReportCanvas-begin
+function renderStockReportPages(report, opts) {
+  var W = 1654, H = 2339, pages = [], ctx, y, headerHeight;
+  function mm(n) { return n * W / 210; }
+  function pt(n) { return mm(n * 0.3528); }
+  var left = mm(14), width = W - left * 2, bottom = H - mm(12);
+  var limit = bottom - pt(18), xs = [left];
+  [0.17, 0.43, 0.12, 0.14, 0.14].forEach(function(f) { xs.push(xs[xs.length - 1] + width * f); });
+  function font(size, bold) {
+    ctx.font = (bold ? 'bold ' : '') + pt(size) + 'px "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic", "Meiryo", sans-serif';
+  }
+  function wrap(text, max, size, bold) {
+    font(size, bold);
+    var result = [], line = '';
+    String(text == null ? '' : text).split('').forEach(function(c) {
+      if (c === '\n') { result.push(line); line = ''; }
+      else {
+        if (line && ctx.measureText(line + c).width > max) { result.push(line); line = ''; }
+        line += c;
+      }
     });
-    if (pt.needle) {
-      subRows.push({
-        label: '<div class="drug-name">' + escHtml(pt.needle.name || data.needleName) + '</div><div class="drug-sub">' + escHtml(String(pt.needle.weeklyCount)) + '本/週</div>',
-        standing: pt.needle.standing,
+    result.push(line);
+    return result;
+  }
+  function rule(x1, yy, x2, thick) {
+    ctx.lineWidth = thick ? 5 : 2;
+    ctx.beginPath(); ctx.moveTo(x1, yy); ctx.lineTo(x2, yy); ctx.stroke();
+  }
+  function box(x, yy, w, h) { ctx.lineWidth = 2; ctx.strokeRect(x, yy, w, h); }
+  function text(lines, x, yy, w, size, bold, align, leading, underline) {
+    font(size, bold); ctx.textAlign = align || 'left';
+    lines.forEach(function(s, i) {
+      var tx = align === 'center' ? x + w / 2 : align === 'right' ? x + w : x;
+      var ty = yy + i * leading;
+      ctx.fillText(s, tx, ty);
+      if (underline) {
+        var tw = ctx.measureText(s).width;
+        var start = align === 'center' ? tx - tw / 2 : align === 'right' ? tx - tw : tx;
+        rule(start, ty + pt(size) * 0.65, start + tw);
+      }
+    });
+  }
+  function flow(s, size, bold, align, indent, underline, leading, areaX, areaW) {
+    var x = areaX == null ? left : areaX, w = areaW == null ? width : areaW;
+    x += indent || 0; w -= indent || 0;
+    var rows = wrap(s, w, size, bold), lh = leading || pt(size) * 1.4;
+    text(rows, x, y + lh / 2, w, size, bold, align, lh, underline);
+    y += rows.length * lh;
+  }
+  function cellLines(s, col, size, bold) { return wrap(s, xs[col + 1] - xs[col] - mm(3), size, bold); }
+  function cellText(rows, col, top, height, size, bold) {
+    var lh = pt(size) * 1.2;
+    text(rows, xs[col] + mm(1.5), top + (height - (rows.length - 1) * lh) / 2,
+      xs[col + 1] - xs[col] - mm(3), size, bold, 'center', lh);
+  }
+  function header() {
+    var labels = ['氏名', '薬品名', '定数', '在庫数', '処方必要数'];
+    var rows = labels.map(function(s, i) { return cellLines(s, i, 11, true); });
+    var h = Math.max(mm(14), Math.max.apply(null, rows.map(function(r) { return r.length * pt(11) * 1.2 + mm(3); })));
+    rows.forEach(function(r, i) {
+      box(xs[i], y, xs[i + 1] - xs[i], h);
+      if (i === 1) {
+        text(r, xs[i], y + h / 2 - pt(5), xs[i+1]-xs[i], 11, true, 'center', pt(13));
+        text(cellLines('用量・1本日数', i, 9, false), xs[i], y + h / 2 + pt(8), xs[i+1]-xs[i], 9, false, 'center', pt(11));
+      } else cellText(r, i, y, h, 11, true);
+    });
+    headerHeight = h;
+    y += h; rule(left, y, left + width, true);
+  }
+  function newPage(first) {
+    var canvas = opts.createCanvas(W, H); pages.push(canvas); ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#000'; ctx.strokeStyle = '#000'; ctx.textBaseline = 'middle';
+    y = mm(12);
+    if (!first) { flow(report.hospital.hospitalName + '御中　残薬のご報告（続き）', 10); y += mm(3); header(); }
+  }
+  newPage(true);
+  flow(opts.checkWareki, 11, false, 'right');
+  flow(report.hospital.hospitalName + '御中', 13, true); rule(left, y, left + width);
+  y += mm(2);
+  var p = opts.pharmacy;
+  [p.name, p.zip + '　' + p.address, 'TEL：' + p.tel, 'FAX：' + p.fax].forEach(function(s) {
+    flow(s, 10, false, 'left', 0, false, pt(14), left + width * 0.55, width * 0.45);
+  });
+  y += mm(3); flow('残薬のご報告', 15, true, 'center'); y += mm(3);
+  [
+    '拝啓　時下ますますご清栄のこととお喜び申し上げます。',
+    '平素は格別のお引き立てを賜り、誠にありがとうございます。',
+    '　' + report.hospital.facilityName + '　ご入居者様の処方についてご連絡です。',
+    '下記処方薬について残薬を確認しております。',
+    'つきましては、用量に変更がなければ、',
+    '次回ご処方の際は「処方必要数」に記載の本数ご処方お願いいたします。',
+    '※施設様ご希望の処方数がございましたら、そちらを優先ください。'
+  ].forEach(function(s, i) {
+    var startY = y;
+    flow(s, 10.5, false, 'left', pt(10.5), i === 6, pt(10.5) * 1.8);
+    if (i === 2) {
+      var facility = wrap('　' + report.hospital.facilityName, width - pt(10.5), 10.5, false);
+      facility.forEach(function(line, n) {
+        font(10.5, false);
+        rule(left + pt(10.5), startY + pt(10.5) * 1.8 * (n + 0.5) + pt(10.5) * 0.65,
+          left + pt(10.5) + ctx.measureText(line).width);
       });
     }
-    var n = subRows.length;
-    if (n === 0) return;
-    subRows.forEach(function(sr, i) {
-      var standingCell = (sr.standing === null || sr.standing === undefined) ? '' : escHtml(String(sr.standing)) + '本';
-      bodyRows += '<tr' + (i === 0 ? ' class="sp-patient-start"' : '') + '>';
-      if (i === 0) bodyRows += '<td class="name" rowspan="' + n + '">' + escHtml(pt.name) + ' 様</td>';
-      bodyRows += cell('drug', sr.label) + cell('num', standingCell) + cell('blank', '') + cell('blank', '') + '</tr>';
-    });
   });
-  // 末尾に手書き用の空行3行（写真の様式に合わせる）
+  y += mm(3);
+  var meta = ['在庫確認日：' + opts.checkWareki, '往診予定日：' + opts.visitWareki];
+  var metaRows = meta.map(function(s, i) { return wrap(s, width / 2 - mm(4), 11, !!i); });
+  var mh = Math.max.apply(null, metaRows.map(function(r) { return r.length * pt(15) + mm(4); }));
+  metaRows.forEach(function(r, i) {
+    box(left + width / 2 * i, y, width / 2, mh);
+    text(r, left + width / 2 * i, y + (mh - (r.length - 1) * pt(15)) / 2, width / 2, 11, !!i, 'center', pt(15), !!i);
+  });
+  y += mh + mm(3); header();
+  var fullCapacity = limit - (mm(12) + pt(14) + mm(3) + headerHeight);
+  (report.patients || []).forEach(function(patient) {
+    var rows = (patient.rows || []).map(function(r) {
+      return { label: r.medicineName, sub: r.doseText + '・1本' + r.perBottleDays + '日', standing: r.standing };
+    });
+    if (patient.needle) rows.push({ label: patient.needle.name || report.needleName, sub: patient.needle.weeklyCount + '本/週', standing: patient.needle.standing });
+    if (!rows.length) return;
+    var name = cellLines(patient.name + ' 様', 0, 11, true);
+    rows.forEach(function(r) {
+      r.main = cellLines(r.label, 1, 11, true); r.detail = cellLines(r.sub, 1, 9, false);
+      r.num = cellLines(r.standing == null ? '' : r.standing + '本', 2, 12, false);
+      r.height = Math.max(mm(11), r.main.length * pt(11) * 1.2 + r.detail.length * pt(9) * 1.2 + mm(3),
+        r.num.length * pt(12) * 1.2 + mm(3), name.length * pt(11) * 1.2 + mm(3));
+    });
+    var total = rows.reduce(function(sum, r) { return sum + r.height; }, 0);
+    if (y + total > limit && total <= fullCapacity) newPage(false);
+    var offset = 0;
+    while (offset < rows.length) {
+      if (y + rows[offset].height > limit) newPage(false);
+      var start = y, end = offset;
+      // 改ページ直後でも収まらない行は、はみ出しても1行描いて先へ進める（同じ行で改ページを繰り返さない）
+      while (end < rows.length && (y + rows[end].height <= limit || end === offset)) {
+        var r = rows[end], top = y;
+        for (var c = 1; c < 5; c++) box(xs[c], top, xs[c+1]-xs[c], r.height);
+        var lh1 = pt(11)*1.2, lh2 = pt(9)*1.2;
+        var textTop = top + (r.height - r.main.length*lh1 - r.detail.length*lh2)/2;
+        text(r.main, xs[1]+mm(1.5), textTop+lh1/2, xs[2]-xs[1]-mm(3), 11, true, 'left', lh1);
+        text(r.detail, xs[1]+mm(1.5), textTop+r.main.length*lh1+lh2/2, xs[2]-xs[1]-mm(3), 9, false, 'left', lh2);
+        cellText(r.num, 2, top, r.height, 12, false);
+        y += r.height; end++;
+      }
+      box(left, start, xs[1]-left, y-start); cellText(name, 0, start, y-start, 11, true);
+      rule(left, start, left+width, true);
+      offset = end;
+      if (offset < rows.length) newPage(false);
+    }
+  });
+  if (y + mm(33) > limit) newPage(false);
   for (var i = 0; i < 3; i++) {
-    bodyRows += '<tr>' + cell('name', '&nbsp;') + cell('drug', '&nbsp;') + cell('num', '&nbsp;') + cell('blank', '&nbsp;') + cell('blank', '&nbsp;') + '</tr>';
+    for (var c = 0; c < 5; c++) box(xs[c], y, xs[c+1]-xs[c], mm(11));
+    y += mm(11);
   }
-
-  document.getElementById('stockPrintSheet').innerHTML = ''
-    + '<div class="date">' + escHtml(checkWareki) + '</div>'
-    + '<div class="to">' + escHtml(data.hospital.hospitalName) + '御中</div>'
-    + '<div class="pharm">'
-    +   escHtml(STOCK_REPORT_PHARMACY.name) + '<br>'
-    +   escHtml(STOCK_REPORT_PHARMACY.zip) + '　' + escHtml(STOCK_REPORT_PHARMACY.address) + '<br>'
-    +   'TEL：' + escHtml(STOCK_REPORT_PHARMACY.tel) + '<br>'
-    +   'FAX：' + escHtml(STOCK_REPORT_PHARMACY.fax)
-    + '</div>'
-    + '<div class="sp-title">残薬のご報告</div>'
-    + '<div class="greeting">'
-    +   '<div class="indent">拝啓　時下ますますご清栄のこととお喜び申し上げます。</div>'
-    +   '<div class="indent">平素は格別のお引き立てを賜り、誠にありがとうございます。</div>'
-    +   '<div class="indent" style="margin-top:6px">　<u>' + escHtml(data.hospital.facilityName) + '</u>　ご入居者様の処方についてご連絡です。</div>'
-    +   '<div class="indent">下記処方薬について残薬を確認しております。</div>'
-    +   '<div class="indent">つきましては、用量に変更がなければ、</div>'
-    +   '<div class="indent">次回ご処方の際は「処方必要数」に記載の本数ご処方お願いいたします。</div>'
-    +   '<div class="indent"><u>※施設様ご希望の処方数がございましたら、そちらを優先ください。</u></div>'
-    + '</div>'
-    + '<div class="meta">'
-    +   '<span>在庫確認日：' + escHtml(checkWareki) + '</span>'
-    +   '<span><u><b>往診予定日：' + escHtml(visitWareki) + '</b></u></span>'
-    + '</div>'
-    + '<table>'
-    +   '<thead><tr>'
-    +     '<th style="width:17%">氏名</th>'
-    +     '<th style="width:43%">薬品名<br><small>用量・1本日数</small></th>'
-    +     '<th style="width:12%">定数</th>'
-    +     '<th style="width:14%">在庫数</th>'
-    +     '<th style="width:14%">処方必要数</th>'
-    +   '</tr></thead>'
-    +   '<tbody>' + bodyRows + '</tbody>'
-    + '</table>';
-  var overlay = document.getElementById('stockPrintOverlay');
-  overlay.style.display = 'block';
-  if (!document.body.classList.contains('sp-printing')) _stockPrintAppTitle = document.title;
-  document.body.classList.add('sp-printing');
-  document.title = '残薬報告書 ' + checkDateVal;  // PDF に保存したときのファイル名
-  overlay.scrollTop = 0;
-  fitStockPrintSheet();
+  if (pages.length > 1) pages.forEach(function(canvas, i) {
+    ctx = canvas.getContext('2d');
+    text([String(i+1) + ' / ' + pages.length], left, bottom - pt(5), width, 10, false, 'center', pt(14));
+  });
+  return pages;
 }
+// @stockReportCanvas-end
 
 var _stockPrintAppTitle = '';
+var _stockPrintGeneration = 0;
+var _stockPrintUrls = [];
+var _stockPrintFiles = [];
+function clearStockPrintPages() {
+  _stockPrintGeneration++;
+  _stockPrintUrls.forEach(function(url) { URL.revokeObjectURL(url); });
+  _stockPrintUrls = []; _stockPrintFiles = [];
+  var container = document.getElementById('stockPrintPages');
+  container.innerHTML = ''; container.classList.remove('sp-zoom');
+}
+function stockReportPrint() {
+  if (!lastStockReport) return;
+  var checkDateVal = document.getElementById('stockReportCheckDate').value;
+  var visitDateVal = document.getElementById('stockReportVisitDate').value;
+  var canvases;
+  try {
+    canvases = renderStockReportPages(lastStockReport, {
+      checkWareki: checkDateVal ? toWarekiShort(checkDateVal) : 'R　年　月　日（　）',
+      visitWareki: visitDateVal ? toWarekiShort(visitDateVal) : 'R　年　月　日（　）',
+      pharmacy: STOCK_REPORT_PHARMACY,
+      createCanvas: function(w, h) { var c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+    });
+  } catch (e) {
+    // iOS で画像のメモリ上限に当たると getContext が null になり、描画で例外になる
+    toast('残薬報告書の画像を作れませんでした。アプリを開き直してお試しください');
+    return;
+  }
+  clearStockPrintPages();
+  var generation = _stockPrintGeneration, ready = 0;
+  var container = document.getElementById('stockPrintPages');
+  var btn = document.getElementById('stockPrintActionBtn');
+  btn.disabled = true; btn.textContent = '準備中…';
+  document.getElementById('stockPrintHint').textContent = navigator.standalone === true
+    ? '画像をタップすると拡大します。共有できないときは画像を長押し→「共有」→「プリント」'
+    : '画像をタップすると拡大します';
+  var overlay = document.getElementById('stockPrintOverlay');
+  overlay.style.display = 'block'; overlay.scrollTop = 0;
+  if (!document.body.classList.contains('sp-printing')) _stockPrintAppTitle = document.title;
+  document.body.classList.add('sp-printing');
+  document.title = '残薬報告書 ' + checkDateVal;
+  var date = (checkDateVal || todayStr()).replace(/[-/]/g, '');
+  canvases.forEach(function(canvas, i) {
+    var img = document.createElement('img');
+    img.className = 'sp-page'; img.alt = '残薬報告書 ' + (i+1);
+    img.onclick = function() { container.classList.toggle('sp-zoom'); };
+    container.appendChild(img);
+    canvas.toBlob(function(blob) {
+      canvas.width = canvas.height = 0;  // 画像にしたら canvas のメモリを手放す
+      if (generation !== _stockPrintGeneration) return;
+      if (!blob) {
+        btn.textContent = '作成できませんでした';
+        toast('残薬報告書の画像を作れませんでした。アプリを開き直してお試しください');
+        _stockPrintGeneration++;
+        return;
+      }
+      _stockPrintFiles[i] = new File([blob], '残薬報告書_' + date + '_' + (i+1) + '.png', { type: 'image/png' });
+      var url = URL.createObjectURL(blob); _stockPrintUrls.push(url); img.src = url;
+      ready++;
+      if (ready === canvases.length) {
+        btn.disabled = false;
+        btn.textContent = navigator.standalone === true ? '共有・プリント' : '印刷する';
+      }
+    }, 'image/png');
+  });
+}
+function stockPrintAction() {
+  if (document.getElementById('stockPrintActionBtn').disabled) return;
+  if (navigator.standalone !== true) { window.print(); return; }
+  function fallback() { toast('画像を長押しして「共有」→「プリント」を選んでください'); }
+  if (!navigator.canShare || !navigator.canShare({ files: _stockPrintFiles })) { fallback(); return; }
+  function failed(e) { if (e.name !== 'AbortError') fallback(); }
+  try {
+    navigator.share({ files: _stockPrintFiles }).catch(failed);
+  } catch (e) { failed(e); }
+}
 function closeStockPrint() {
   document.getElementById('stockPrintOverlay').style.display = 'none';
   document.body.classList.remove('sp-printing');
   document.title = _stockPrintAppTitle;
-  document.getElementById('stockPrintSheet').innerHTML = '';
+  clearStockPrintPages();
 }
 
-function fitStockPrintSheet() {
-  var overlay = document.getElementById('stockPrintOverlay');
-  if (overlay.style.display === 'none') return;
-  var sheet = document.getElementById('stockPrintSheet');
-  sheet.style.zoom = '';  // 縮小前の幅で測る
-  sheet.style.zoom = Math.min(1, (overlay.clientWidth - 24) / sheet.offsetWidth);
-}
-window.addEventListener('resize', fitStockPrintSheet);
 
 // ============================================================
 // 一括残数 過去の記録（日付グループ一覧）
