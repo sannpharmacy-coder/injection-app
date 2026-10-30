@@ -185,6 +185,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
   align-items: flex-end; justify-content: center;
 }
 .modal-overlay.open { display: flex; }
+#photoViewerModal { z-index: 250; } /* 履歴の画面(200)から開くので上に。setupOverlay(300) より下 */
 .modal {
   background: var(--white); width: 100%; max-width: 600px;
   border-radius: 18px 18px 0 0; padding: 20px 18px;
