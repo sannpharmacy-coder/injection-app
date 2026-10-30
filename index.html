@@ -1270,9 +1270,11 @@ try { localStorage.removeItem('initCache_v1'); } catch (e) {}
 // GAS Web App の /exec URL をここに埋め込む（初回のURL入力を不要にする）
 var DEFAULT_GAS_URL = 'https://script.google.com/macros/s/AKfycbxGymBN5jE6y8h_L98MBIKqS3CPIvSla6qt7FqyMiQF6dSdlyVsjO1kuILQFpJhb_Rc/exec';
 var GAS_URL = localStorage.getItem('gasUrl') || DEFAULT_GAS_URL;
+var movedGasUrl = '';
+var gasUrlSwitched = false;
 
 function getGasUrl() {
-  return localStorage.getItem('gasUrl') || DEFAULT_GAS_URL;
+  return movedGasUrl || localStorage.getItem('gasUrl') || DEFAULT_GAS_URL;
 }
 
 // PIN（公開ページからの不正アクセス防止。コードには保存せずGAS側で照合）
@@ -1900,6 +1902,7 @@ async function api(action, params, body) {
 
 async function _apiRequest(action, params, body, meta) {
   GAS_URL = getGasUrl();
+  var requestGasUrl = GAS_URL;
   if (!GAS_URL) {
     document.getElementById('setupOverlay').classList.add('open');
     throw new Error('GAS URLが設定されていません。設定画面でURLを入力してください。');
@@ -1938,6 +1941,25 @@ async function _apiRequest(action, params, body, meta) {
     throw new Error('サーバーから不正な応答が返りました。GASのデプロイ設定（アクセス権／最新版）を確認してください。');
   }
   data = _unwrapPerf(data, meta);
+  if (data && data.moved) {
+    var destination = null;
+    try {
+      var candidate = new URL(data.movedTo);
+      if (candidate.protocol === 'https:' && !candidate.username && !candidate.password &&
+          (candidate.hostname === 'script.google.com' || candidate.hostname.endsWith('.run.app'))) destination = candidate.href;
+    } catch (_) {}
+    var movedError = new Error(data.error || '切り替え作業中です…');
+    movedError.noRetry = true;
+    if (gasUrlSwitched) movedError.message = '切り替え作業中です…';
+    else if (destination) {
+      movedGasUrl = destination;
+      gasUrlSwitched = true;
+      localStorage.removeItem('gasUrl');
+      movedError.message = '接続先を切り替えました。もう一度保存してください';
+    }
+    movedError.photoRetry = !!destination && requestGasUrl !== getGasUrl();
+    throw movedError;
+  }
   if (data && data.error === 'unauthorized') {
     localStorage.removeItem('appPin');
     var ov = document.getElementById('setupOverlay');
@@ -2886,7 +2908,10 @@ var logPhotoUpload = null;
 function createPhotoUpload(base64, fileName, statusId) {
   var state = { base64: base64, fileName: fileName, result: null, failed: false, used: false, reserved: false, discarded: false };
   setPhotoUploadStatus(statusId, '写真を送信中…');
-  state.promise = api('uploadPhoto', null, { base64: base64, fileName: fileName }).then(function(res) {
+  state.promise = api('uploadPhoto', null, { base64: base64, fileName: fileName }).catch(function(error) {
+    if (!error.photoRetry) throw error;
+    return api('uploadPhoto', null, { base64: base64, fileName: fileName });
+  }).then(function(res) {
     if (!res || !res.url || !res.fileId) throw new Error('写真の送信に失敗しました');
     state.result = res;
     if (state.discarded && !state.used) discardPhotoUpload(state);
