@@ -4045,12 +4045,17 @@ function renderStockReportPages(report, opts) {
     if (!first) { flow(report.hospital.hospitalName + '御中　残薬のご報告（続き）', 10); y += mm(3); header(); }
   }
   newPage(true);
-  flow(opts.checkWareki, 11, false, 'right');
+  var blankDate = '　　年　　月　　日（　　）';  // 日付は手書きで記入する
+  flow(blankDate, 11, false, 'right');
   flow(report.hospital.hospitalName + '御中', 13, true); rule(left, y, left + width);
   y += mm(2);
   var p = opts.pharmacy;
-  [p.name, p.zip + '　' + p.address, 'TEL：' + p.tel, 'FAX：' + p.fax].forEach(function(s) {
-    flow(s, 10, false, 'left', 0, false, pt(14), left + width * 0.55, width * 0.45);
+  // 差出人は右端に寄せ、行頭はそろえる（いちばん長い行の幅で左端を決める）
+  var pharmLines = [p.name, p.zip, p.address, 'TEL：' + p.tel, 'FAX：' + p.fax];
+  font(10, false);
+  var pharmW = Math.min(width * 0.45, Math.max.apply(null, pharmLines.map(function(s) { return ctx.measureText(s).width; })) + 1);
+  pharmLines.forEach(function(s) {
+    flow(s, 10, false, 'left', 0, false, pt(14), left + width - pharmW, pharmW);
   });
   y += mm(3); flow('残薬のご報告', 15, true, 'center'); y += mm(3);
   [
@@ -4062,19 +4067,20 @@ function renderStockReportPages(report, opts) {
     '次回ご処方の際は「処方必要数」に記載の本数ご処方お願いいたします。',
     '※施設様ご希望の処方数がございましたら、そちらを優先ください。'
   ].forEach(function(s, i) {
-    var startY = y;
-    flow(s, 10.5, false, 'left', pt(10.5), i === 6, pt(10.5) * 1.8);
+    // 本文は 12pt、左揃えのまま左を広く空けて中央寄りに置く
+    var startY = y, gs = 12, gi = mm(14);
+    flow(s, gs, false, 'left', gi, i === 6, pt(gs) * 1.8);
     if (i === 2) {
-      var facility = wrap('　' + report.hospital.facilityName, width - pt(10.5), 10.5, false);
+      var facility = wrap('　' + report.hospital.facilityName, width - gi, gs, false);
       facility.forEach(function(line, n) {
-        font(10.5, false);
-        rule(left + pt(10.5), startY + pt(10.5) * 1.8 * (n + 0.5) + pt(10.5) * 0.65,
-          left + pt(10.5) + ctx.measureText(line).width);
+        font(gs, false);
+        rule(left + gi, startY + pt(gs) * 1.8 * (n + 0.5) + pt(gs) * 0.65,
+          left + gi + ctx.measureText(line).width);
       });
     }
   });
   y += mm(3);
-  var meta = ['在庫確認日：' + opts.checkWareki, '往診予定日：' + opts.visitWareki];
+  var meta = ['在庫確認日：' + blankDate, '往診予定日：' + opts.visitWareki];
   var metaRows = meta.map(function(s, i) { return wrap(s, width / 2 - mm(4), 11, !!i); });
   var mh = Math.max.apply(null, metaRows.map(function(r) { return r.length * pt(15) + mm(4); }));
   metaRows.forEach(function(r, i) {
@@ -4150,7 +4156,6 @@ function stockReportPrint() {
   var canvases;
   try {
     canvases = renderStockReportPages(lastStockReport, {
-      checkWareki: checkDateVal ? toWarekiShort(checkDateVal) : 'R　年　月　日（　）',
       visitWareki: visitDateVal ? toWarekiShort(visitDateVal) : 'R　年　月　日（　）',
       pharmacy: STOCK_REPORT_PHARMACY,
       createCanvas: function(w, h) { var c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
