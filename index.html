@@ -1270,6 +1270,9 @@ try { localStorage.removeItem('initCache_v1'); } catch (e) {}
 // ============================================================
 // GAS Web App の /exec URL をここに埋め込む（初回のURL入力を不要にする）
 var DEFAULT_GAS_URL = 'https://injection-med-333435996098.asia-northeast1.run.app/exec';
+// C4 で切り替える前の本番 GAS。端末に保存されていたら消して、既定の接続先を使う
+var OLD_GAS_URL = 'https://script.google.com/macros/s/AKfycbxGymBN5jE6y8h_L98MBIKqS3CPIvSla6qt7FqyMiQF6dSdlyVsjO1kuILQFpJhb_Rc/exec';
+if (localStorage.getItem('gasUrl') === OLD_GAS_URL) localStorage.removeItem('gasUrl');
 var GAS_URL = localStorage.getItem('gasUrl') || DEFAULT_GAS_URL;
 var movedGasUrl = '';
 var gasUrlSwitched = false;
