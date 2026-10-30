@@ -323,6 +323,39 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 .setup-box h2 { font-size: 20px; font-weight: 800; margin-bottom: 6px; }
 .setup-box p  { font-size: 13px; color: var(--gray-400); margin-bottom: 20px; line-height: 1.5; }
 .step-badge { display: inline-block; background: var(--primary); color: white; border-radius: 50%; width: 22px; height: 22px; font-size: 12px; font-weight: 700; text-align: center; line-height: 22px; margin-right: 6px; }
+
+/* 残薬報告書 */
+#stockPrintOverlay { position:fixed; inset:0; z-index:300; overflow:auto; background:#e9ecef; }
+.sp-toolbar { position:sticky; top:0; z-index:1; display:flex; justify-content:space-between; padding:12px; padding-top:calc(12px + env(safe-area-inset-top)); background:#fff; border-bottom:1px solid #ccc; }
+#stockPrintSheet { box-sizing:content-box; width:182mm; padding:12mm 14mm; margin:12px auto; background:#fff; box-shadow:0 2px 12px #0003; font-family:"Hiragino Sans","Yu Gothic","Meiryo",sans-serif; font-size:11pt; color:#000; line-height:1.5; }
+#stockPrintSheet .date { text-align:right; }
+#stockPrintSheet .to { font-size:13pt; font-weight:700; border-bottom:1px solid #000; margin-top:6px; }
+#stockPrintSheet .pharm { margin:6px 0 0 auto; width:max-content; font-size:10pt; line-height:1.7; }
+.sp-title { text-align:center; font-size:15pt; font-weight:700; margin:14px 0; }
+#stockPrintSheet .greeting { font-size:10.5pt; line-height:1.8; }
+#stockPrintSheet .indent { margin-left:1em; }
+#stockPrintSheet .meta { display:flex; border:1px solid #000; margin-top:12px; font-size:11pt; }
+#stockPrintSheet .meta span { flex:1; padding:6px; text-align:center; }
+#stockPrintSheet table { width:100%; border-collapse:collapse; table-layout:fixed; margin-top:10px; font-size:11pt; }
+#stockPrintSheet th, #stockPrintSheet td { border:1px solid #000; padding:5px 6px; vertical-align:middle; overflow-wrap:anywhere; }
+#stockPrintSheet th { text-align:center; background:#eee; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+#stockPrintSheet small, #stockPrintSheet .drug-sub { font-size:9pt; font-weight:400; color:#666; }
+#stockPrintSheet .drug-name { font-weight:700; }
+#stockPrintSheet .name { text-align:center; font-weight:700; }
+#stockPrintSheet .num { text-align:center; font-size:12pt; }
+#stockPrintSheet tbody tr { height:10mm; }
+#stockPrintSheet tr { break-inside:avoid; page-break-inside:avoid; }
+.sp-patient-start > td { border-top-width:2px !important; }
+#stockPrintSheet u { text-decoration:underline; text-underline-offset:2px; }
+@media screen { body.sp-printing { overflow:hidden; } }
+@media print {
+  @page { size:A4 portrait; margin:12mm 14mm; }
+  html:has(body.sp-printing), body.sp-printing { background:#fff; height:auto; }
+  body.sp-printing > *:not(#stockPrintOverlay) { display:none !important; }
+  #stockPrintOverlay { position:static; overflow:visible; background:#fff; }
+  #stockPrintOverlay .sp-toolbar { display:none; }
+  #stockPrintSheet { zoom:1 !important; box-shadow:none; margin:0; padding:0; width:auto; }
+}
 </style>
 </head>
 <body>
@@ -944,6 +977,10 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 <div id="progressBar" aria-hidden="true"><div class="pg-fill"></div></div>
 <div id="progressLabel" role="status" aria-live="polite"></div>
 <div id="toast"></div>
+<div id="stockPrintOverlay" style="display:none">
+  <div class="sp-toolbar"><button class="btn btn-outline" onclick="closeStockPrint()">← 戻る</button><button class="btn btn-primary" onclick="window.print()">印刷する</button></div>
+  <div id="stockPrintSheet"></div>
+</div>
 
 <script>
 // @shared-begin doseSchedule
@@ -3950,21 +3987,19 @@ function stockReportPrint() {
   var visitDateVal = document.getElementById('stockReportVisitDate').value;
   var checkWareki = checkDateVal ? toWarekiShort(checkDateVal) : 'R　年　月　日（　）';
   var visitWareki  = visitDateVal ? toWarekiShort(visitDateVal) : 'R　年　月　日（　）';
-  // visitPrintPDF と同じく、クエリとフラグメントを落としたURLだけを戻り先に使う
-  var appUrl = location.href.split('?')[0].split('#')[0];
 
   var bodyRows = '';
   function cell(cls, inner) { return '<td class="' + cls + '">' + inner + '</td>'; }
   (data.patients || []).forEach(function(pt) {
     var subRows = (pt.rows || []).map(function(r) {
       return {
-        label: escHtml(r.medicineName) + '（' + escHtml(r.doseText) + '）<span class="days">【' + escHtml(String(r.perBottleDays)) + '日】</span>',
+        label: '<div class="drug-name">' + escHtml(r.medicineName) + '</div><div class="drug-sub">' + escHtml(r.doseText) + '・1本' + escHtml(String(r.perBottleDays)) + '日</div>',
         standing: r.standing,
       };
     });
     if (pt.needle) {
       subRows.push({
-        label: escHtml(pt.needle.name || data.needleName) + '（' + escHtml(String(pt.needle.weeklyCount)) + '本/週）',
+        label: '<div class="drug-name">' + escHtml(pt.needle.name || data.needleName) + '</div><div class="drug-sub">' + escHtml(String(pt.needle.weeklyCount)) + '本/週</div>',
         standing: pt.needle.standing,
       });
     }
@@ -3972,8 +4007,8 @@ function stockReportPrint() {
     if (n === 0) return;
     subRows.forEach(function(sr, i) {
       var standingCell = (sr.standing === null || sr.standing === undefined) ? '' : escHtml(String(sr.standing)) + '本';
-      bodyRows += '<tr>';
-      if (i === 0) bodyRows += '<td class="name" rowspan="' + n + '">' + escHtml(pt.name) + '様</td>';
+      bodyRows += '<tr' + (i === 0 ? ' class="sp-patient-start"' : '') + '>';
+      if (i === 0) bodyRows += '<td class="name" rowspan="' + n + '">' + escHtml(pt.name) + ' 様</td>';
       bodyRows += cell('drug', sr.label) + cell('num', standingCell) + cell('blank', '') + cell('blank', '') + '</tr>';
     });
   });
@@ -3982,37 +4017,7 @@ function stockReportPrint() {
     bodyRows += '<tr>' + cell('name', '&nbsp;') + cell('drug', '&nbsp;') + cell('num', '&nbsp;') + cell('blank', '&nbsp;') + cell('blank', '&nbsp;') + '</tr>';
   }
 
-  var win = window.open('', '_blank');
-  if (!win) { toast('印刷画面を開けませんでした（ポップアップを許可してください）'); return; }
-  win.document.write('<!DOCTYPE html><html lang="ja"><head><meta charset="UTF-8">'
-    + '<title>残薬報告書 ' + escHtml(checkDateVal) + '</title>'
-    + '<style>'
-    + '@page{size:A4 portrait;margin:12mm 14mm}'
-    + 'body{font-family:"Hiragino Sans","Yu Gothic","Meiryo",sans-serif;font-size:11pt;color:#000;margin:10mm 12mm;line-height:1.5}'
-    + '.date{text-align:right;font-size:11.5pt;margin-top:4px}'
-    + '.to{font-size:13pt;font-weight:700;margin-top:6px}'
-    + '.pharm{margin:6px 0 0 48%;font-size:10.5pt;line-height:1.7}'
-    + '.greeting{margin-top:14px;font-size:11pt;line-height:1.9}'
-    + '.greeting .indent{margin-left:1em}'
-    + '.meta{margin-top:12px;text-align:center;font-size:11pt;line-height:2}'
-    + 'table{width:100%;border-collapse:collapse;margin-top:10px;font-size:11pt;table-layout:fixed}'
-    + 'th,td{border:1px solid #000;padding:5px 6px;vertical-align:middle;overflow-wrap:anywhere}'
-    + '.days{white-space:nowrap}'
-    + 'th{text-align:center;font-weight:700;background:#fff}'
-    + 'td.name{text-align:center;font-weight:700;width:22%}'
-    + 'td.drug{width:38%;text-align:left}'
-    + 'td.num{width:12%;text-align:center}'
-    + 'td.blank{width:14%}'
-    + 'tbody tr{height:9.5mm}'
-    + 'tr{page-break-inside:avoid;break-inside:avoid}'
-    + 'u{text-decoration:underline;text-underline-offset:2px}'
-    + '@media print{body{margin:0}button{display:none!important}}'
-    + '</style></head><body>'
-    // アプリに戻るボタン（スマホで新規タブから戻れない問題対策。印刷時は非表示）
-    + '<div style="margin-bottom:10px">'
-    +   '<button onclick="window.close();setTimeout(function(){location.href=\'' + escAttrJs(appUrl) + '\'},250)" '
-    +     'style="padding:9px 20px;font-size:12pt;background:#fff;color:#1a6fbf;border:2px solid #1a6fbf;border-radius:6px;cursor:pointer">← アプリに戻る</button>'
-    + '</div>'
+  document.getElementById('stockPrintSheet').innerHTML = ''
     + '<div class="date">' + escHtml(checkWareki) + '</div>'
     + '<div class="to">' + escHtml(data.hospital.hospitalName) + '御中</div>'
     + '<div class="pharm">'
@@ -4021,6 +4026,7 @@ function stockReportPrint() {
     +   'TEL：' + escHtml(STOCK_REPORT_PHARMACY.tel) + '<br>'
     +   'FAX：' + escHtml(STOCK_REPORT_PHARMACY.fax)
     + '</div>'
+    + '<div class="sp-title">残薬のご報告</div>'
     + '<div class="greeting">'
     +   '<div class="indent">拝啓　時下ますますご清栄のこととお喜び申し上げます。</div>'
     +   '<div class="indent">平素は格別のお引き立てを賜り、誠にありがとうございます。</div>'
@@ -4031,25 +4037,44 @@ function stockReportPrint() {
     +   '<div class="indent"><u>※施設様ご希望の処方数がございましたら、そちらを優先ください。</u></div>'
     + '</div>'
     + '<div class="meta">'
-    +   '在庫確認日：' + escHtml(checkWareki) + '<br>'
-    +   '<u>往診予定日：' + escHtml(visitWareki) + '</u>'
+    +   '<span>在庫確認日：' + escHtml(checkWareki) + '</span>'
+    +   '<span><u><b>往診予定日：' + escHtml(visitWareki) + '</b></u></span>'
     + '</div>'
     + '<table>'
     +   '<thead><tr>'
-    +     '<th style="width:22%">氏名</th>'
-    +     '<th style="width:38%">薬品名（1日使用数）【1本日数】</th>'
+    +     '<th style="width:17%">氏名</th>'
+    +     '<th style="width:43%">薬品名<br><small>用量・1本日数</small></th>'
     +     '<th style="width:12%">定数</th>'
     +     '<th style="width:14%">在庫数</th>'
     +     '<th style="width:14%">処方必要数</th>'
     +   '</tr></thead>'
     +   '<tbody>' + bodyRows + '</tbody>'
-    + '</table>'
-    + '<div style="margin-top:14px;text-align:center">'
-    +   '<button onclick="window.print()" style="padding:10px 36px;font-size:13pt;background:#1a6fbf;color:#fff;border:none;border-radius:6px;cursor:pointer">🖨 印刷する</button>'
-    + '</div>'
-    + '</body></html>');
-  win.document.close();
+    + '</table>';
+  var overlay = document.getElementById('stockPrintOverlay');
+  overlay.style.display = 'block';
+  if (!document.body.classList.contains('sp-printing')) _stockPrintAppTitle = document.title;
+  document.body.classList.add('sp-printing');
+  document.title = '残薬報告書 ' + checkDateVal;  // PDF に保存したときのファイル名
+  overlay.scrollTop = 0;
+  fitStockPrintSheet();
 }
+
+var _stockPrintAppTitle = '';
+function closeStockPrint() {
+  document.getElementById('stockPrintOverlay').style.display = 'none';
+  document.body.classList.remove('sp-printing');
+  document.title = _stockPrintAppTitle;
+  document.getElementById('stockPrintSheet').innerHTML = '';
+}
+
+function fitStockPrintSheet() {
+  var overlay = document.getElementById('stockPrintOverlay');
+  if (overlay.style.display === 'none') return;
+  var sheet = document.getElementById('stockPrintSheet');
+  sheet.style.zoom = '';  // 縮小前の幅で測る
+  sheet.style.zoom = Math.min(1, (overlay.clientWidth - 24) / sheet.offsetWidth);
+}
+window.addEventListener('resize', fitStockPrintSheet);
 
 // ============================================================
 // 一括残数 過去の記録（日付グループ一覧）
