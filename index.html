@@ -492,8 +492,8 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
         <input type="hidden" id="bulkHospitalId">
       </div>
       <div class="form-group">
-        <label>実施日</label>
-        <input type="date" id="bulkDate">
+        <label>実施日 <span id="bulkDateDow"></span></label>
+        <input type="date" id="bulkDate" onchange="updateDateDow('bulkDate')">
       </div>
       <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin-top:0">
         <button class="btn btn-outline" onclick="openStockReport()" style="padding:10px 4px;font-size:13px;line-height:1.3">残薬報告書出力</button>
@@ -665,7 +665,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       <select id="logAction" onchange="onLogActionChange()"></select>
     </div>
     <div class="form-group">
-      <label>実施日</label>
+      <label><span id="logDateLabel">処方日</span> <span id="logDateDow"></span></label>
       <input type="date" id="logDate" onchange="onLogDateChange()">
     </div>
     <div id="logSection-処方受取">
@@ -834,8 +834,8 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
     <input type="hidden" id="editLogId">
     <input type="hidden" id="editLogCapacity" value="">
     <div class="form-group">
-      <label>実施日</label>
-      <input type="date" id="editLogDate">
+      <label><span id="editLogDateLabel">処方日</span> <span id="editLogDateDow"></span></label>
+      <input type="date" id="editLogDate" onchange="updateDateDow('editLogDate')">
     </div>
     <!-- 処方受取セクション -->
     <div id="editLogSection-処方受取">
@@ -2818,8 +2818,19 @@ function getLogActionDate() {
   return d;
 }
 
+// 処方受取は処方日、それ以外は実施日と呼ぶ
+function dateLabelFor(action) { return action === '処方受取' ? '処方日' : '実施日'; }
+// 日付入力の横の曜日表示を更新する
+function updateDateDow(inputId) {
+  var el = document.getElementById(inputId + 'Dow');
+  if (!el) return;
+  var m = withDow(document.getElementById(inputId).value).match(/\((.)\)/);
+  el.textContent = m ? '（' + m[1] + '）' : '';
+}
+
 // 実施日を変更したらプレビュー/必要本数を再計算
 function onLogDateChange() {
+  updateDateDow('logDate');
   if (!_logRxData || !_logRxData.capacity) return;
   if (document.getElementById('logNextVisit').value) calcLogBottlesSuggestion();
   else updateLogDepletionPreview();
@@ -2833,6 +2844,7 @@ function openLogModal(prescriptionId, action, medicineName, capacity, curDailyAm
   document.getElementById('logAction').innerHTML = actions.map(function(a) { return '<option value="' + a + '">' + a + '</option>'; }).join('');
   document.getElementById('logAction').value = action;
   document.getElementById('logDate').value = todayStr();
+  updateDateDow('logDate');
   document.getElementById('logMemo').value = '';
   document.getElementById('logBottles').value = '';
   document.getElementById('logNewStock').value = '1';  // 初期値1（フォーカスで全選択され上書き入力可）
@@ -2997,6 +3009,7 @@ function formatDateShort(d) {
 
 function onLogActionChange() {
   var action = document.getElementById('logAction').value;
+  document.getElementById('logDateLabel').textContent = dateLabelFor(action);
   ['処方受取','残数確認','用量変更'].forEach(function(a) {
     var el = document.getElementById('logSection-' + a);
     if (el) el.style.display = (a === action) ? '' : 'none';
@@ -3313,6 +3326,13 @@ async function showHistory(prescriptionId, medicineType) {
 }
 
 var currentHistoryLogs = [];
+// 'yyyy/M/d' や 'yyyy-MM-dd'（後ろに時刻があってもよい）→ 'yyyy/MM/dd(曜)' + 時刻
+function withDow(str) {
+  var m = String(str || '').match(/^(\d{4})[-\/](\d{1,2})[-\/](\d{1,2})(.*)$/);
+  if (!m) return String(str || '');
+  var dt = new Date(+m[1], +m[2] - 1, +m[3]);
+  return m[1] + '/' + ('0' + m[2]).slice(-2) + '/' + ('0' + m[3]).slice(-2) + '(' + WAREKI_YOBI[dt.getDay()] + ')' + m[4];
+}
 function renderHistory(logs) {
   currentHistoryLogs = logs || [];
   var historyIsInhaler = currentHistoryIsInhaler; // 吸入薬は1日回数を表示しない
@@ -3334,16 +3354,14 @@ function renderHistory(logs) {
     if (l.stockAfter !== '' && l.stockAfter !== undefined && l.stockAfter !== null) {
       afterStr = '<div style="font-size:13px">確定在庫: <b>' + parseFloat(l.stockAfter).toFixed(1) + '</b> 単位</div>';
     }
-    // 入力時刻（HH:MM）を表示
-    var inputTime = '';
-    if (l.inputAt && l.inputAt.length > 10) {
-      inputTime = l.inputAt.slice(11, 16); // "YYYY/MM/DD HH:MM:SS" → "HH:MM"
-    }
+    // 入力日時（"YYYY/MM/DD HH:MM:SS" → "YYYY/MM/DD HH:MM"）。無い記録は出さない
+    var inputStr = (l.inputAt && String(l.inputAt).length > 10) ? String(l.inputAt).replace(/(\d+:\d{2}):\d{2}$/, '$1') : '';
     return '<div style="padding:12px 0;border-bottom:1px solid #e8ecf0;">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">'
       + '<span style="font-weight:700;font-size:14px;color:' + color + '">' + escHtml(l.action) + '</span>'
-      + '<span style="font-size:13px;color:#9aa5b4">' + escHtml(l.date || '') + (inputTime ? '　' + escHtml(inputTime) : '') + '</span>'
+      + '<span style="font-size:13px;color:#9aa5b4">' + dateLabelFor(l.action) + ' ' + escHtml(withDow(l.date)) + '</span>'
       + '</div>'
+      + (inputStr ? '<div style="font-size:12px;color:#9aa5b4">入力日時: ' + escHtml(withDow(inputStr)) + '</div>' : '')
       + (l.bottles ? '<div style="font-size:13px">受取本数: <b>' + escHtml(l.bottles) + '</b> 本</div>' : '')
       + beforeStr
       + afterStr
@@ -3351,9 +3369,9 @@ function renderHistory(logs) {
       + ((l.dailyCount && !historyIsInhaler) ? '<div style="font-size:13px">1日回数: <b>' + escHtml(l.dailyCount) + '</b> 回/日</div>' : '')
       + (l.frequency ? '<div style="font-size:13px">使用頻度: <b>' + escHtml(l.frequency) + '</b></div>' : '')
       + (l.newDailyAmount ? '<div style="font-size:13px;color:#e65100">→ 変更後使用量: <b>' + escHtml(l.newDailyAmount) + '</b> 単位/日</div>' : '')
-      + (l.nextVisitDate && l.nextVisitDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">次回処方予定: ' + escHtml(l.nextVisitDate) + '</div>' : '')
+      + (l.nextVisitDate && l.nextVisitDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">次回処方予定: ' + escHtml(withDow(l.nextVisitDate)) + '</div>' : '')
       + (l.needleCount ? '<div style="font-size:13px;color:#9aa5b4">針: ' + escHtml(l.needleCount) + ' 本</div>' : '')
-      + (l.depletionDate && l.depletionDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">枯渇予定: ' + escHtml(l.depletionDate) + '</div>' : '')
+      + (l.depletionDate && l.depletionDate !== '1970/01/01' ? '<div style="font-size:13px;color:#9aa5b4">枯渇予定: ' + escHtml(withDow(l.depletionDate)) + '</div>' : '')
       + (l.memo ? '<div style="font-size:13px;color:#9aa5b4;margin-top:4px">📝 ' + escHtml(l.memo) + '</div>' : '')
       + (safeDriveUrl(l.photoUrl) ? '<div style="margin-top:8px">' + photoButtonHtml(l.photoUrl) + '</div>' : '')
       + '<div style="display:flex;gap:6px;margin-top:8px">'
@@ -3375,6 +3393,7 @@ async function openEditLogModal(logId) {
     }
     document.getElementById('editLogId').value = logId;
     document.getElementById('editLogDate').value = (log.date || '').replace(/\//g, '-');
+    updateDateDow('editLogDate');
     document.getElementById('editLogMemo').value = log.memo || '';
     document.getElementById('editLogBottles').value = log.bottles || '';
     var stockInput = document.getElementById('editLogStock');
@@ -3403,6 +3422,7 @@ async function openEditLogModal(logId) {
     // アクション別セクション表示
     var action = log.action || '';
     document.getElementById('editLogActionLabel').textContent = action;
+    document.getElementById('editLogDateLabel').textContent = dateLabelFor(action);
     ['処方受取','残数確認','用量変更'].forEach(function(a) {
       var el = document.getElementById('editLogSection-' + a);
       if (el) el.style.display = (a === action) ? '' : 'none';
@@ -3698,6 +3718,7 @@ var bulkPhotoUpload = null;
 
 function initBulkPage() {
   document.getElementById('bulkDate').value = todayStr();
+  updateDateDow('bulkDate');
   // 病院選択が未初期化なら初期化
   if (hospitals.length > 0) {
     initBulkHospitalSelect();
