@@ -185,7 +185,13 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
   align-items: flex-end; justify-content: center;
 }
 .modal-overlay.open { display: flex; }
-#photoViewerModal { z-index: 250; } /* 履歴の画面(200)から開くので上に。setupOverlay(300) より下 */
+#photoViewerModal { z-index: 250; padding:0; } /* 履歴の画面(200)から開くので上に。setupOverlay(300) より下 */
+#photoViewerModal > .modal { width:100%; max-width:none; height:100vh; height:100dvh; max-height:none; box-sizing:border-box; border-radius:0; display:flex; flex-direction:column; padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right)) max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left)); }
+#photoViewerFrame { flex:1; min-height:0; overflow:hidden; position:relative; touch-action:none; user-select:none; display:flex; align-items:center; justify-content:center; }
+#photoViewerImage { width:100%; height:100%; object-fit:contain; flex:none; transform-origin:center; pointer-events:none; }
+#photoViewerControls { display:flex; justify-content:center; gap:12px; padding-top:10px; }
+#photoViewerControls button { min-width:56px; height:44px; padding:0 14px; font-size:18px; border:1px solid var(--gray-200, #d0d7de); border-radius:10px; background:#fff; }
+#photoViewerStatus { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
 .modal {
   background: var(--white); width: 100%; max-width: 600px;
   border-radius: 18px 18px 0 0; padding: 20px 18px;
@@ -846,7 +852,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
     <div id="editLogSection-残数確認" style="display:none">
       <div class="form-group">
         <label>残本数</label>
-        <input type="number" id="editLogStock" min="0" step="1" placeholder="例：2" oninput="onEditStockBottlesInput()">
+        <input type="number" id="editLogStock" min="0" step="any" placeholder="例：2" oninput="onEditStockBottlesInput()">
         <div id="editLogStockHint" style="font-size:12px;color:#9aa5b4;margin-top:4px"></div>
         <div id="editLogStockCalc" style="font-size:12px;color:#1a6fbf;margin-top:2px"></div>
       </div>
@@ -880,10 +886,13 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
 
 <!-- 非公開写真の表示 -->
 <div class="modal-overlay" id="photoViewerModal">
-  <div class="modal" style="max-width:720px">
+  <div class="modal">
     <div class="modal-title"><span>添付写真</span><button onclick="closeModal('photoViewerModal')">&#215;</button></div>
+    <div id="photoViewerFrame">
     <div id="photoViewerStatus" style="padding:18px;text-align:center;color:#607d8b">写真を取得しています…</div>
-    <img id="photoViewerImage" alt="添付写真" style="display:none;width:100%;max-height:70vh;object-fit:contain">
+    <img id="photoViewerImage" alt="添付写真" draggable="false" style="display:none">
+    </div>
+    <div id="photoViewerControls"><button type="button" onclick="photoViewerZoomBy(1.25)" aria-label="拡大">＋</button><button type="button" onclick="photoViewerZoomBy(0.8)" aria-label="縮小">－</button><button type="button" onclick="resetPhotoViewer()">等倍</button></div>
   </div>
 </div>
 
@@ -1213,8 +1222,8 @@ function dsUpdateReadout(prefix) {
   if (v.valid && v.calc) {
     var c = v.calc;
     var range = Math.abs(c.dailyAmountMax - c.dailyAmountMin) > 0.0005;
-    lines.push('= 1日使用量 <b>' + c.dailyAmountMax + '</b> 単位/日' + (range ? '（最大時）' : '') + '　注射 ' + c.injectionsMax + ' 回/日');
-    if (range) lines.push('最小時 ' + c.dailyAmountMin + ' 単位/日・注射 ' + Math.max(1, c.injectionsMin) + ' 回/日（針の基準。1日回数として保存）');
+    lines.push('= 1日使用量 <b>' + c.dailyAmountMax + '</b> 単位/日' + (range ? '（最大時）' : '') + '　注射 ' + c.injectionsMax + ' 回/日（1日回数として保存）');
+    if (range) lines.push('最小時 ' + c.dailyAmountMin + ' 単位/日・注射 ' + Math.max(1, c.injectionsMin) + ' 回/日（針の基準）');
     if (st.frequency && st.frequency !== '毎日') lines.push('※ 使用する日1日あたりの量。使用頻度（' + escHtml(st.frequency) + '）で換算されます');
   } else if (v.error) {
     lines.push('<span style="color:#9aa5b4">' + escHtml(v.error) + '</span>');
@@ -1702,6 +1711,8 @@ function photoButtonHtml(url, label) {
 async function openPhotoViewer(url) {
   var safe = safeDriveUrl(url);
   if (!safe) return;
+  resetPhotoViewer();
+  initPhotoViewerGestures();
   var gen = ++_photoViewerGen;
   var status = document.getElementById('photoViewerStatus');
   var image = document.getElementById('photoViewerImage');
@@ -1712,12 +1723,81 @@ async function openPhotoViewer(url) {
     var photo = await api('getPhoto', { url: safe });
     if (gen !== _photoViewerGen) return;
     if (!photo || !photo.base64 || !photo.mimeType) throw new Error('写真を取得できませんでした');
-    if (image) { image.src = 'data:' + photo.mimeType + ';base64,' + photo.base64; image.style.display = ''; }
+    if (image) { image.src = 'data:' + photo.mimeType + ';base64,' + photo.base64; image.style.display = ''; image.onload = applyPhotoViewerTransform; applyPhotoViewerTransform(); }
     if (status) status.style.display = 'none';
   } catch (e) {
     if (gen !== _photoViewerGen) return;
     if (status) status.textContent = '写真を表示できませんでした: ' + (e.message || '取得エラー');
   }
+}
+var _photoViewerScale = 1, _photoViewerX = 0, _photoViewerY = 0;
+var _photoViewerGesture = null, _photoViewerLastTap = 0;
+function applyPhotoViewerTransform() {
+  var frame = document.getElementById('photoViewerFrame'), image = document.getElementById('photoViewerImage');
+  if (!frame || !image) return;
+  var w = frame.clientWidth || 0, h = frame.clientHeight || 0;
+  var fit = image.naturalWidth && image.naturalHeight ? Math.min(w / image.naturalWidth, h / image.naturalHeight) : 1;
+  var maxX = Math.max(0, ((image.naturalWidth || w) * fit * _photoViewerScale - w) / 2);
+  var maxY = Math.max(0, ((image.naturalHeight || h) * fit * _photoViewerScale - h) / 2);
+  _photoViewerX = Math.max(-maxX, Math.min(maxX, _photoViewerX));
+  _photoViewerY = Math.max(-maxY, Math.min(maxY, _photoViewerY));
+  image.style.transform = 'translate(' + _photoViewerX + 'px,' + _photoViewerY + 'px) scale(' + _photoViewerScale + ')';
+}
+function resetPhotoViewer() {
+  _photoViewerScale = 1; _photoViewerX = 0; _photoViewerY = 0;
+  _photoViewerGesture = null; _photoViewerLastTap = 0;
+  applyPhotoViewerTransform();
+}
+function photoViewerZoomTo(scale) {
+  _photoViewerScale = Math.max(1, Math.min(5, scale));
+  if (_photoViewerScale === 1) { _photoViewerX = 0; _photoViewerY = 0; }
+  applyPhotoViewerTransform();
+}
+function photoViewerZoomBy(factor) { photoViewerZoomTo(_photoViewerScale * factor); }
+function togglePhotoViewerZoom() { photoViewerZoomTo(_photoViewerScale > 1 ? 1 : 2.5); }
+function initPhotoViewerGestures() {
+  var frame = document.getElementById('photoViewerFrame');
+  if (!frame || frame._photoGestures) return;
+  frame._photoGestures = true;
+  function distance(t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+  function start(touches, tap) {
+    _photoViewerGesture = { x: touches[0].clientX, y: touches[0].clientY, px: _photoViewerX, py: _photoViewerY,
+      scale: _photoViewerScale, distance: touches.length > 1 ? distance(touches) : 0, tap: tap && touches.length === 1 };
+    if (touches.length > 1) _photoViewerLastTap = 0;
+  }
+  function move(touches) {
+    var g = _photoViewerGesture; if (!g) return;
+    if (touches.length > 1) {
+      if (!g.distance) { start(touches, false); return; }
+      g.tap = false;
+      photoViewerZoomTo(g.scale * distance(touches) / g.distance);
+    } else {
+      var dx = touches[0].clientX - g.x, dy = touches[0].clientY - g.y;
+      if (Math.abs(dx) + Math.abs(dy) > 8) { g.tap = false; _photoViewerLastTap = 0; }
+      if (_photoViewerScale > 1) { _photoViewerX = g.px + dx; _photoViewerY = g.py + dy; applyPhotoViewerTransform(); }
+    }
+  }
+  frame.addEventListener('touchstart', function(e) { e.preventDefault(); start(e.touches, true); }, { passive:false });
+  frame.addEventListener('touchmove', function(e) { e.preventDefault(); move(e.touches); }, { passive:false });
+  frame.addEventListener('touchend', function(e) {
+    e.preventDefault();
+    var g = _photoViewerGesture;
+    if (e.touches.length) { start(e.touches, false); return; }
+    if (g && g.tap) {
+      var now = Date.now();
+      if (_photoViewerLastTap && now - _photoViewerLastTap <= 300) { togglePhotoViewerZoom(); _photoViewerLastTap = 0; }
+      else _photoViewerLastTap = now;
+    }
+    _photoViewerGesture = null;
+  }, { passive:false });
+  frame.addEventListener('touchcancel', function() { _photoViewerGesture = null; _photoViewerLastTap = 0; });
+  frame.addEventListener('wheel', function(e) { e.preventDefault(); photoViewerZoomBy(Math.exp(-e.deltaY * 0.002)); }, { passive:false });
+  frame.addEventListener('dblclick', function(e) { e.preventDefault(); togglePhotoViewerZoom(); });
+  frame.addEventListener('mousedown', function(e) { if (e.button === 0) { e.preventDefault(); start([e], false); } });
+  frame.addEventListener('mousemove', function(e) { if (e.buttons === 1) move([e]); });
+  frame.addEventListener('mouseup', function() { _photoViewerGesture = null; });
+  frame.addEventListener('mouseleave', function() { _photoViewerGesture = null; });
+  window.addEventListener('resize', applyPhotoViewerTransform);
 }
 var _photoViewerGen = 0;
 
@@ -3180,6 +3260,7 @@ async function submitLog() {
     invalidateAlertCache(); // 在庫変更のためアラートを再取得
     toast('✓ ' + action + 'を記録しました');
     if (photoFailed) toast('写真の保存に失敗しました（記録は保存しました）');
+    if (addRes && addRes.warning) toast(addRes.warning);
     // 保存中に写真を差し替えた場合、その新しい世代は次の入力として残す。
     // closeModal は resetLogPhoto を呼ぶため、保存対象以外を消さないよう直接閉じる。
     if (gen !== _logModalGen) { /* 別の入力で開き直されているので閉じない */ }
@@ -3296,7 +3377,10 @@ async function openEditLogModal(logId) {
     document.getElementById('editLogDate').value = (log.date || '').replace(/\//g, '-');
     document.getElementById('editLogMemo').value = log.memo || '';
     document.getElementById('editLogBottles').value = log.bottles || '';
-    document.getElementById('editLogStock').value = log.stockAfter !== undefined && log.stockAfter !== null && log.stockAfter !== '' ? log.stockAfter : '';
+    var stockInput = document.getElementById('editLogStock');
+    var stockBottles = log.action === '残数確認' && log.stockAfter !== undefined && log.stockAfter !== null && log.stockAfter !== '' ? (parseFloat(log.capacity) > 0 ? log.stockAfter / parseFloat(log.capacity) : log.stockAfter) : '';
+    stockInput.value = stockBottles === '' ? '' : Math.round(stockBottles * 100) / 100;
+    stockInput.dataset.initialValue = String(stockInput.value);
     document.getElementById('editLogDailyAmount').value = log.newDailyAmount || '';
     document.getElementById('editLogDailyCount').value = log.dailyCount || '';
     if (log.action === '用量変更') {
@@ -3340,7 +3424,7 @@ async function openEditLogModal(logId) {
 }
 
 function onEditStockBottlesInput() {
-  var val = parseInt(document.getElementById('editLogStock').value) || 0;
+  var val = parseFloat(document.getElementById('editLogStock').value) || 0;
   var cap = parseFloat(document.getElementById('editLogCapacity').value) || 0;
   var calc = document.getElementById('editLogStockCalc');
   if (val >= 0 && cap > 0) {
@@ -3361,9 +3445,9 @@ async function submitEditLog() {
   if (b) body.bottles = parseFloat(b);
   // 残数確認：本数×容量で単位換算
   var s = document.getElementById('editLogStock').value;
-  if (s !== '') {
+  if (action === '残数確認' && s !== '' && Number(s) !== Number(document.getElementById('editLogStock').dataset.initialValue)) {
     var cap = parseFloat(document.getElementById('editLogCapacity').value) || 0;
-    var bottles = parseInt(s);
+    var bottles = parseFloat(s);
     body.stockAfter = cap > 0 ? bottles * cap : bottles;
     body.stockBottles = bottles;
   }
@@ -3391,6 +3475,7 @@ async function submitEditLog() {
     var updRes = await api('updateLog', null, body);
     invalidateAlertCache(); // 在庫変更のためアラートを再取得
     toast('✓ 記録を変更しました');
+    if (updRes && updRes.warning) toast(updRes.warning);
     closeModal('editLogModal');
     // 同梱データはlogs/prescriptionsそれぞれ個別にtry-catchされているため
     // （片方だけ埋め込みに失敗しうる）、フォールバックもフィールド単位で判定する。
@@ -3443,6 +3528,7 @@ async function deleteLog(logId) {
   try {
     var delRes = await api('deleteLog', null, delBody);
     toast('✓ 記録を削除しました');
+    if (delRes && delRes.warning) toast(delRes.warning);
     // logs/prescriptionsは個別にtry-catchされているため、フォールバックも
     // フィールド単位で判定する（片方だけ埋め込み失敗→もう片方が更新されず
     // サイレントに古いままになるのを防ぐ）。
@@ -6053,7 +6139,7 @@ async function deleteMasterRow() {
 function openModal(id)  { document.getElementById(id).classList.add('open'); }
 function closeModal(id) {
   if (id === 'logModal') resetLogPhoto();
-  if (id === 'photoViewerModal') _photoViewerGen++;
+  if (id === 'photoViewerModal') { _photoViewerGen++; resetPhotoViewer(); }
   document.getElementById(id).classList.remove('open');
 }
 document.querySelectorAll('.modal-overlay').forEach(function(el) {
