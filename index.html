@@ -577,7 +577,6 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
         <div class="form-group">
           <label>病院・クリニック</label>
           <div id="visitHospitalSearchSelect"></div>
-          <input type="hidden" id="visitHospital">
         </div>
         <div class="form-group">
           <label>今回往診日</label>
@@ -1337,7 +1336,9 @@ async function savePinFromSetup() {
   } catch(e) {
     if (!e.isLockError) localStorage.removeItem('appPin');
     toast(e.message || 'PINが正しくありません');
+    return;
   }
+  handleVisitLinkParams();
 }
 
 function updatePinLengthWarning(value, warningId) {
@@ -2103,8 +2104,40 @@ function showPage(page) {
   if (page === 'master')   { loadMasterList(currentMasterTab); }
 }
 
-// 起動時: URLが未設定ならセットアップ画面を表示
-// QRコードからのアクセス時: URLパラメータがあれば往診計算を自動実行
+// リンクの引数（?hospital=&visitDate=&nextVisitDate=）がそろっていれば往診計算を自動実行する。
+// 起動時（PINあり）と、PINの入力に成功した後の両方から呼ぶ。計算を始めたら済みにして二度は走らせない。
+var _visitLinkDone = false;
+var _visitLinkChain = Promise.resolve();
+
+async function handleVisitLinkParams() {
+  async function run() {
+    var params = new URLSearchParams(location.search);
+    var qrHospital = params.get('hospital');
+    var qrVisitDate = params.get('visitDate');
+    var qrNextVisit = params.get('nextVisitDate');
+    if (!qrHospital || !qrVisitDate || !qrNextVisit || _visitLinkDone) return;
+    await loadHospitals();
+    if (!hospitalsLoaded) return;
+    var hosp = hospitals.find(function(h) { return h.hospitalId === qrHospital; });
+    showPage('visit');
+    switchVisitTab('calc');
+    document.getElementById('visitDate').value = qrVisitDate.replace(/\//g, '-');
+    document.getElementById('nextVisitDate').value = qrNextVisit.replace(/\//g, '-');
+    if (!hosp) {
+      toast('リンクの病院が見つかりません。病院を選んでください', 5000);
+      return;
+    }
+    createSearchSelect('visitHospitalSearchSelect', hospitals.map(function(h) {
+      return { value: h.hospitalId, label: h.hospitalName + '（' + h.facilityName + '）' };
+    }), qrHospital, '病院・クリニックを検索...');
+    _visitLinkDone = true;
+    calcVisit();
+  }
+  _visitLinkChain = _visitLinkChain.then(run, run);
+  return _visitLinkChain;
+}
+
+// 起動時: PINが未設定ならセットアップ画面を表示
 window.addEventListener('DOMContentLoaded', function() {
   if (!getPin()) {
     document.getElementById('setupOverlay').classList.add('open');
@@ -2114,32 +2147,7 @@ window.addEventListener('DOMContentLoaded', function() {
     // 初期ページが検索ページなら全患者・アラート・設定・病院一覧をまとめて読み込む
     // (改善2: getInit 1リクエスト化。旧個別取得はinitApp内でフォールバックとして使用)
     initApp();
-    // QRコードアクセス: ?hospital=...&visitDate=...&nextVisitDate=...
-    var params = new URLSearchParams(location.search);
-    var qrHospital   = params.get('hospital');
-    var qrVisitDate  = params.get('visitDate');
-    var qrNextVisit  = params.get('nextVisitDate');
-    if (qrHospital && qrVisitDate && qrNextVisit) {
-      // 往診タブに切り替えてから計算
-      showPage('visit');
-      loadHospitals().then(function() {
-        switchVisitTab('calc');
-        // 検索付きセレクトにhospitalIdをセット
-        var hosp = hospitals.find(function(h) { return h.hospitalId === qrHospital; });
-        if (hosp) {
-          var label = hosp.hospitalName + '（' + hosp.facilityName + '）';
-          createSearchSelect('visitHospitalSearchSelect', hospitals.map(function(h) {
-            return { value: h.hospitalId, label: h.hospitalName + '（' + h.facilityName + '）' };
-          }), qrHospital, '病院・クリニックを検索...', function(value) {
-            document.getElementById('visitHospital').value = value;
-          });
-          document.getElementById('visitHospital').value = qrHospital;
-        }
-        document.getElementById('visitDate').value     = qrVisitDate.replace(/\//g, '-');
-        document.getElementById('nextVisitDate').value = qrNextVisit.replace(/\//g, '-');
-        calcVisit();
-      });
-    }
+    handleVisitLinkParams();
   }
 });
 
@@ -4631,7 +4639,17 @@ var hospitalsLoaded = false;
 var lastVisitResult = null; // 最後の往診計算結果（一括登録・PDF用）
 var visitBottleOverrides = {}; // {prescriptionId: 変更本数}
 
-async function loadHospitals() {
+// 取得中に別の所から呼ばれても、進行中の1本を共有する（遅れて届いた2本目の応答が
+// 病院欄を空で作り直して、選んだ病院を消さないように）。失敗したら次の呼び出しで取り直す。
+var _loadHospitalsPromise = null;
+function loadHospitals() {
+  if (!_loadHospitalsPromise) {
+    _loadHospitalsPromise = _loadHospitalsOnce().finally(function() { _loadHospitalsPromise = null; });
+  }
+  return _loadHospitalsPromise;
+}
+
+async function _loadHospitalsOnce() {
   if (hospitalsLoaded) return;
   try {
     // initApp()のgetInitで既にhospitalsが埋まっていれば再取得せず、
@@ -4643,9 +4661,7 @@ async function loadHospitals() {
     var hospitalOptions = hospitals.map(function(h) {
       return { value: h.hospitalId, label: h.hospitalName + '（' + h.facilityName + '）' };
     });
-    createSearchSelect('visitHospitalSearchSelect', hospitalOptions, '', '病院・クリニックを検索...', function(value) {
-      document.getElementById('visitHospital').value = value;
-    });
+    createSearchSelect('visitHospitalSearchSelect', hospitalOptions, '', '病院・クリニックを検索...');
     // 往診予定フィルタはそのままselectに追加
     var sel2 = document.getElementById('planFilterHospital');
     hospitals.forEach(function(h) {
@@ -4685,7 +4701,7 @@ function switchVisitTab(tab) {
 }
 
 async function calcVisit() {
-  var hospitalId    = document.getElementById('visitHospital').value;
+  var hospitalId    = getSearchSelectValue('visitHospitalSearchSelect');
   var visitDate     = document.getElementById('visitDate').value;
   var nextVisitDate = document.getElementById('nextVisitDate').value;
 
