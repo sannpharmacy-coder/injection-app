@@ -2129,7 +2129,10 @@ async function handleVisitLinkParams() {
     }
     createSearchSelect('visitHospitalSearchSelect', hospitals.map(function(h) {
       return { value: h.hospitalId, label: h.hospitalName + '（' + h.facilityName + '）' };
-    }), qrHospital, '病院・クリニックを検索...');
+    }), qrHospital, '病院・クリニックを検索...', onVisitHospitalChange);
+    wireVisitHospitalSelect();
+    // 欄の作り直しでは onChange が呼ばれないので、前の病院の結果をここで消す。
+    clearVisitResults();
     _visitLinkDone = true;
     calcVisit();
   }
@@ -4726,7 +4729,8 @@ async function _loadHospitalsOnce() {
     var hospitalOptions = hospitals.map(function(h) {
       return { value: h.hospitalId, label: h.hospitalName + '（' + h.facilityName + '）' };
     });
-    createSearchSelect('visitHospitalSearchSelect', hospitalOptions, '', '病院・クリニックを検索...');
+    createSearchSelect('visitHospitalSearchSelect', hospitalOptions, '', '病院・クリニックを検索...', onVisitHospitalChange);
+    wireVisitHospitalSelect();
     // 往診予定フィルタはそのままselectに追加
     var sel2 = document.getElementById('planFilterHospital');
     hospitals.forEach(function(h) {
@@ -4795,6 +4799,27 @@ async function calcVisit() {
     if (myCalcGen !== _visitCalcRequestGen) return; // 同上。古い失敗応答で新しい画面を壊さない
     document.getElementById('visitResults').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
   }
+}
+
+function clearVisitResults() {
+  // 処理中の計算や保存が消去後の画面を更新しないよう、世代を進める。
+  ++_visitCalcRequestGen;
+  ++_visitPlanResultGen;
+  lastVisitResult = null;
+  visitBottleOverrides = {};
+  var el = document.getElementById('visitResults');
+  if (el) el.innerHTML = '';
+}
+
+function wireVisitHospitalSelect() {
+  var clear = document.getElementById('visitHospitalSearchSelect_clear');
+  if (clear) clear.addEventListener('mousedown', clearVisitResults);
+  var input = document.getElementById('visitHospitalSearchSelect_input');
+  if (input) input.addEventListener('input', clearVisitResults);
+}
+
+function onVisitHospitalChange(value) {
+  if (!lastVisitResult || String(value) !== String(lastVisitResult.hospitalId)) clearVisitResults();
 }
 
 function renderVisitResults(result) {
@@ -5160,12 +5185,15 @@ function applyVisitBottleEdits() {
 // ============================================================
 async function visitBulkRegister() {
   if (!lastVisitResult) return;
+  var r = lastVisitResult;
   var btn = document.getElementById('visitBulkRegisterBtn');
-  btn.disabled = true; btn.textContent = '登録中...';
+  if (btn) {
+    btn.disabled = true; btn.textContent = '登録中...';
+  }
 
   var tasks = [];
-  var visitDate = lastVisitResult.visitDate;
-  lastVisitResult.patients.forEach(function(pt) {
+  var visitDate = r.visitDate;
+  r.patients.forEach(function(pt) {
     (pt.prescriptions || []).forEach(function(m) {
       var pid = m.prescriptionId || '';
       var bottles = visitBottleOverrides[pid] !== undefined ? visitBottleOverrides[pid] : m.requiredBottles;
@@ -5177,7 +5205,9 @@ async function visitBulkRegister() {
 
   if (!tasks.length) {
     toast('登録対象がありません（必要本数0の薬品のみ）');
-    btn.disabled = false; btn.textContent = '📋 一括登録';
+    if (btn) {
+      btn.disabled = false; btn.textContent = '📋 一括登録';
+    }
     return;
   }
 
@@ -5194,7 +5224,7 @@ async function visitBulkRegister() {
     var result = await api('addBulkReceipts', null, body);
     if (result && result.needsConfirm === 'recent_receipt') {
       var medicineNames = {};
-      lastVisitResult.patients.forEach(function(pt) {
+      r.patients.forEach(function(pt) {
         (pt.prescriptions || []).forEach(function(m) {
           // 同じ施設で複数の患者が同じ薬を使うため、患者名も添えて区別する
           medicineNames[m.prescriptionId] = (pt.patientName ? pt.patientName + ' ' : '') + m.medicineName;
@@ -5221,7 +5251,9 @@ async function visitBulkRegister() {
     toast('エラー: ' + escHtml(e.message));
   } finally {
     progressEnd(pg);
-    btn.disabled = false; btn.textContent = '📋 一括登録';
+    if (btn) {
+      btn.disabled = false; btn.textContent = '📋 一括登録';
+    }
   }
 }
 
