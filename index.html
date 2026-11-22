@@ -508,6 +508,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
           <div style="font-size:15px;font-weight:700">🖨 残薬報告書</div>
           <button class="btn btn-outline btn-sm" onclick="closeStockReport()">✕ 閉じる</button>
         </div>
+        <div id="stockReportHospitalLabel" style="font-size:13px;color:var(--gray-600, #555);margin-bottom:8px"></div>
         <div class="form-group">
           <label>在庫確認日</label>
           <input type="date" id="stockReportCheckDate">
@@ -3198,6 +3199,7 @@ var _visitPlanResultGen = 0;
 // 古い要求の応答（成功・失敗いずれも）が、既に表示されている新しい計算結果を
 // 上書きしないようにする（2026-08チーフレビュー対応・指摘#5）。
 var _visitCalcRequestGen = 0;
+var _visitCalcHospitalId = '';
 function recentReceiptLines(receipts) {
   return (receipts || []).map(function(r) {
     return '・' + String(r.date || '').slice(5) + ' 受取 ' + r.bottles + '本'
@@ -3603,7 +3605,8 @@ async function refreshBulkStockIfOpen() {
   if (!hospitalId || !window._bulkPatients) return;
   try {
     var data = await api('getBulkStockData', { hospitalId: hospitalId });
-    if (loadVersion === _bulkStockLoadVersion) {
+    // 待つ間に読み込みが失敗していたら（_bulkPatients が消えている）、エラー表示を上書きしない
+    if (loadVersion === _bulkStockLoadVersion && window._bulkPatients) {
       renderBulkStockList(data);
       setBulkStockHospital(hospitalId);
     }
@@ -3931,6 +3934,12 @@ async function openStockReport() {
   var hospitalId = getSearchSelectValue('bulkHospitalSearchSelect');
   if (!hospitalId) { toast('病院を選択してください'); return; }
   _stockReportHospitalId = hospitalId;
+  // 前に開いた病院の報告書を印刷しないよう、新しい応答が来るまで空にする
+  lastStockReport = null;
+  var hospital = hospitals.find(function(h) { return h.hospitalId === hospitalId; });
+  document.getElementById('stockReportHospitalLabel').innerHTML = hospital
+    ? '病院: ' + escHtml(hospital.hospitalName + '（' + hospital.facilityName + '）')
+    : '';
   _stockReportOpen = true;
   var gen = ++_stockReportGen;
   document.getElementById('stockReportSection').style.display = '';
@@ -4324,7 +4333,12 @@ function stockReportPrint() {
     toast('残薬報告書の画像を作れませんでした。アプリを開き直してお試しください');
     return;
   }
-  showPrintPages(canvases, { title: '残薬報告書 ' + checkDateVal, filePrefix: '残薬報告書', date: checkDateVal,
+  var rawHospitalName = lastStockReport.hospital ? lastStockReport.hospital.hospitalName : null;
+  var hospitalName = rawHospitalName == null ? '' : String(rawHospitalName).trim();
+  // ファイル名に使えない文字・空白・制御文字は _ に。長い名前は 40 文字で切る
+  var fileHospitalName = hospitalName.replace(/[\\/:*?"<>|\s\x00-\x1f\x7f]/g, '_').slice(0, 40);
+  showPrintPages(canvases, { title: '残薬報告書 ' + (hospitalName ? hospitalName + ' ' : '') + checkDateVal,
+    filePrefix: hospitalName ? '残薬報告書_' + fileHospitalName : '残薬報告書', date: checkDateVal,
     errorMessage: '残薬報告書の画像を作れませんでした。アプリを開き直してお試しください' });
 }
 function showPrintPages(canvases, options) {
@@ -4786,6 +4800,8 @@ async function calcVisit() {
   // 開始した要求が先に成功すると世代が進み、先に開始した要求の応答が
   // (成功・失敗いずれも)遅れて届いても、既に表示中の新しい結果を上書きしない。
   var myCalcGen = ++_visitCalcRequestGen;
+  _visitCalcHospitalId = hospitalId;
+  resetVisitResultState_();
   loading('visitResults');
   try {
     var result = await api('calcVisitPrescription', null, {
@@ -4801,12 +4817,20 @@ async function calcVisit() {
   }
 }
 
+function resetVisitResultState_() {
+  lastVisitResult = null;
+  visitBottleOverrides = {};
+  ++_visitPlanResultGen;
+  if (document.getElementById('visitEditModal')) closeModal('visitEditModal');
+  var editBody = document.getElementById('visitEditBody');
+  if (editBody) editBody.innerHTML = '';
+}
+
 function clearVisitResults() {
   // 処理中の計算や保存が消去後の画面を更新しないよう、世代を進める。
   ++_visitCalcRequestGen;
-  ++_visitPlanResultGen;
-  lastVisitResult = null;
-  visitBottleOverrides = {};
+  resetVisitResultState_();
+  _visitCalcHospitalId = '';
   var el = document.getElementById('visitResults');
   if (el) el.innerHTML = '';
 }
@@ -4819,7 +4843,7 @@ function wireVisitHospitalSelect() {
 }
 
 function onVisitHospitalChange(value) {
-  if (!lastVisitResult || String(value) !== String(lastVisitResult.hospitalId)) clearVisitResults();
+  if (String(value) !== String(_visitCalcHospitalId)) clearVisitResults();
 }
 
 function renderVisitResults(result) {
@@ -4995,10 +5019,14 @@ function renderVisitResults(result) {
 var SAVE_BTN_LABEL = '📅 往診予定を保存（確定）';
 
 // 世代が一致する場合だけ、往診予定保存ボタン・ステータス欄・トーストを更新する。
-// 一致しない場合は何もしない(古い保存処理の完了を、今の画面へ反映しない)。
+// 一致しない場合（古い保存処理の完了）は、失敗の通知（failToast）だけを出す。
 function setVisitPlanUi(gen, opts) {
   opts = opts || {};
-  if (gen !== _visitPlanResultGen) return;
+  if (gen !== _visitPlanResultGen) {
+    // 古い保存処理の失敗だけを通知し、今の結果は更新しない。
+    if (opts.failToast) toast(opts.failToast);
+    return;
+  }
   if (opts.toastMsg) toast(opts.toastMsg);
   var btn = document.getElementById('visitPlanSaveBtn');
   var statusEl = document.getElementById('visitPlanSaveStatus');
@@ -5074,23 +5102,29 @@ async function saveVisitPlan() {
       } else if (res2.outcome === 'conflict') {
         // 確認中に既存予定の内容がさらに変わっていた。暗黙に更新せず、再度ユーザーへ委ねる。
         progressFail(pg);
+        var conflictMessage = '往診予定の状態が変わっていたため更新を中止しました。もう一度お試しください';
         setVisitPlanUi(ctx.gen, {
           disabled: false, status: '更新中に既存の予定が変わったため中止しました', btnText: SAVE_BTN_LABEL,
-          toastMsg: '往診予定の状態が変わっていたため更新を中止しました。もう一度お試しください',
+          toastMsg: conflictMessage, failToast: conflictMessage,
         });
       } else {
         progressFail(pg);
-        setVisitPlanUi(ctx.gen, { disabled: false, status: '更新できませんでした: ' + (res2.error || '不明なエラー'), btnText: SAVE_BTN_LABEL });
+        var updateError = '更新できませんでした: ' + (res2.error || '不明なエラー');
+        setVisitPlanUi(ctx.gen, { disabled: false, status: updateError, btnText: SAVE_BTN_LABEL, failToast: '往診予定を' + updateError });
       }
       return;
     }
 
     // duplicate_exists 等、想定外のoutcome。安全側として保存扱いにしない。
     progressFail(pg);
-    setVisitPlanUi(ctx.gen, { disabled: false, status: '保存できませんでした: ' + (res.error || '不明なエラー'), btnText: SAVE_BTN_LABEL });
+    var saveError = '保存できませんでした: ' + (res.error || '不明なエラー');
+    setVisitPlanUi(ctx.gen, { disabled: false, status: saveError, btnText: SAVE_BTN_LABEL, failToast: '往診予定を' + saveError });
   } catch (e) {
     progressFail(pg);
-    setVisitPlanUi(ctx.gen, { disabled: false, status: '保存に失敗しました', btnText: SAVE_BTN_LABEL, toastMsg: 'エラー: ' + e.message });
+    setVisitPlanUi(ctx.gen, {
+      disabled: false, status: '保存に失敗しました', btnText: SAVE_BTN_LABEL,
+      toastMsg: 'エラー: ' + e.message, failToast: '往診予定の保存に失敗しました: ' + e.message,
+    });
   } finally {
     progressEnd(pg);
     _visitPlanSaving = false;
@@ -5124,6 +5158,8 @@ function visitBulkEdit() {
 }
 
 function applyVisitBottleEdits() {
+  if (!lastVisitResult) { closeModal('visitEditModal'); return; }
+
   // モーダル内のinputから最新値を読み取ってoverridesに保存
   document.querySelectorAll('#visitEditBody input[data-pid]').forEach(function(inp) {
     var pid = inp.dataset.pid;
@@ -5132,8 +5168,6 @@ function applyVisitBottleEdits() {
   });
 
   // 変更された処方の表示を更新（本数 + 処方後枯渇日を再計算して反映）
-  if (!lastVisitResult) { closeModal('visitEditModal'); return; }
-
   lastVisitResult.patients.forEach(function(pt) {
     (pt.prescriptions || []).forEach(function(m) {
       var pid = m.prescriptionId || '';
