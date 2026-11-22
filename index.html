@@ -489,7 +489,6 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
       <div class="form-group">
         <label>病院・クリニック</label>
         <div id="bulkHospitalSearchSelect"></div>
-        <input type="hidden" id="bulkHospitalId">
       </div>
       <div class="form-group">
         <label>実施日 <span id="bulkDateDow"></span></label>
@@ -550,6 +549,7 @@ label { display: block; font-size: 13px; font-weight: 600; color: var(--gray-400
     </div>
 
     <!-- 患者・処方一覧 -->
+    <div id="bulkStockHospitalLabel"></div>
     <div id="bulkStockList"></div>
 
     <!-- 確定ボタン -->
@@ -3594,11 +3594,16 @@ async function deleteLog(logId) {
 async function refreshBulkStockIfOpen() {
   var bulkPage = document.getElementById('page-bulk');
   if (!bulkPage || !bulkPage.classList.contains('active')) return;
-  var hospitalId = document.getElementById('bulkHospitalId').value;
+  // 取り直すのは、最後に読み込みを始めた一覧の病院（病院欄をその後に変えても消しても変わらない）
+  var hospitalId = _bulkStockRequestedHospitalId;
+  var loadVersion = _bulkStockLoadVersion;
   if (!hospitalId || !window._bulkPatients) return;
   try {
     var data = await api('getBulkStockData', { hospitalId: hospitalId });
-    renderBulkStockList(data);
+    if (loadVersion === _bulkStockLoadVersion) {
+      renderBulkStockList(data);
+      setBulkStockHospital(hospitalId);
+    }
   } catch(e) { /* サイレントに失敗 */ }
 }
 
@@ -3737,29 +3742,50 @@ function initBulkHospitalSelect() {
   var opts = hospitals.map(function(h) {
     return { value: h.hospitalId, label: h.hospitalName + '（' + h.facilityName + '）' };
   });
-  createSearchSelect('bulkHospitalSearchSelect', opts, '', '病院・クリニックを検索...', function(value) {
-    document.getElementById('bulkHospitalId').value = value;
-  });
+  createSearchSelect('bulkHospitalSearchSelect', opts, '', '病院・クリニックを検索...');
+}
+
+var _bulkStockHospitalId = '';
+var _bulkStockLoadVersion = 0;
+var _bulkStockRequestedHospitalId = ''; // 最後に読み込みを始めた一覧の病院
+
+// 一覧を描いた病院を、見出しと一括確定の書き込み先にそろえる
+function setBulkStockHospital(hospitalId) {
+  var hospital = hospitals.find(function(h) { return h.hospitalId === hospitalId; });
+  document.getElementById('bulkStockHospitalLabel').innerHTML = hospital
+    ? '読み込んだ病院: ' + escHtml(hospital.hospitalName + '（' + hospital.facilityName + '）')
+    : '';
+  _bulkStockHospitalId = hospitalId;
 }
 
 async function loadBulkStock() {
-  var hospitalId = document.getElementById('bulkHospitalId').value;
+  var hospitalId = getSearchSelectValue('bulkHospitalSearchSelect');
   if (!hospitalId) { toast('病院を選択してください'); return; }
+  var loadVersion = ++_bulkStockLoadVersion;
+  _bulkStockRequestedHospitalId = hospitalId;
+  var label = document.getElementById('bulkStockHospitalLabel');
   document.getElementById('bulkStockList').innerHTML = '<div class="loading"><div class="spinner"></div>読み込み中...</div>';
   document.getElementById('bulkPhotoSection').style.display = 'none';
   document.getElementById('bulkSubmitSection').style.display = 'none';
   try {
     var data = await api('getBulkStockData', { hospitalId: hospitalId });
+    if (loadVersion !== _bulkStockLoadVersion) return;
     renderBulkStockList(data);
+    setBulkStockHospital(hospitalId);
     document.getElementById('bulkPhotoSection').style.display = '';
     document.getElementById('bulkSubmitSection').style.display = '';
   } catch(e) {
+    if (loadVersion !== _bulkStockLoadVersion) return;
+    _bulkStockHospitalId = '';
+    window._bulkPatients = null;
+    label.innerHTML = '';
     document.getElementById('bulkStockList').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
   }
 }
 
 function renderBulkStockList(patients) {
   if (!patients || !patients.length) {
+    window._bulkPatients = patients;
     document.getElementById('bulkStockList').innerHTML = '<div class="empty-state">この病院に使用中の処方がある患者がいません</div>';
     return;
   }
@@ -3893,11 +3919,19 @@ var _bulkHistoryPrescriptionId = null;
 // 残薬報告書（一括残数確認ページから開く）
 // ============================================================
 var lastStockReport = null;
+var _stockReportHospitalId = '';
+// 報告書を開くたび・閉じるたびに進める。古い応答で描き直さないための札（病院 ID は閉じても消さない）。
+var _stockReportGen = 0;
+var _stockReportOpen = false;
 
 async function openStockReport() {
-  var hospitalId = document.getElementById('bulkHospitalId').value;
+  var hospitalId = getSearchSelectValue('bulkHospitalSearchSelect');
   if (!hospitalId) { toast('病院を選択してください'); return; }
+  _stockReportHospitalId = hospitalId;
+  _stockReportOpen = true;
+  var gen = ++_stockReportGen;
   document.getElementById('stockReportSection').style.display = '';
+  document.getElementById('bulkStockHospitalLabel').style.display = 'none';
   document.getElementById('bulkStockList').style.display = 'none';
   document.getElementById('bulkPhotoSection').style.display = 'none';
   document.getElementById('bulkSubmitSection').style.display = 'none';
@@ -3907,6 +3941,7 @@ async function openStockReport() {
       api('getStockReport', { hospitalId: hospitalId }),
       api('getVisitPlans', { hospitalId: hospitalId }),
     ]);
+    if (gen !== _stockReportGen) return;
     var data  = results[0];
     var plans = results[1];
     if (data && data.error) { toast('取得失敗: ' + data.error); closeStockReport(); return; }
@@ -3924,12 +3959,16 @@ async function openStockReport() {
     }
     renderStockReportPreview(data);
   } catch (e) {
+    if (gen !== _stockReportGen) return;
     document.getElementById('stockReportPatients').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
   }
 }
 
 function closeStockReport() {
+  ++_stockReportGen;
+  _stockReportOpen = false;
   document.getElementById('stockReportSection').style.display = 'none';
+  document.getElementById('bulkStockHospitalLabel').style.display = '';
   document.getElementById('bulkStockList').style.display = '';
   if (window._bulkPatients && window._bulkPatients.length) {
     document.getElementById('bulkPhotoSection').style.display = '';
@@ -4017,14 +4056,15 @@ async function onStockReportOverrideChange(prescriptionId) {
     body.fixedStockCount = n;
   }
   try {
-    var hospitalId = document.getElementById('bulkHospitalId').value;
+    var hospitalId = _stockReportHospitalId;
     body.returnStockReport = true;
     body.hospitalId = hospitalId;
     var res = await api('updatePrescription', null, body);
     if (res && res.error) { toast('保存失敗: ' + res.error); return; }
     var data = res && res.stockReport ? res.stockReport : await api('getStockReport', { hospitalId: hospitalId });
     if (data && data.error) { toast('取得失敗: ' + data.error); return; }
-    renderStockReportPreview(data);
+    // 保存した病院の報告書を開いていれば描き直す（同じ病院で開き直していても、保存後の値を出す）。
+    if (_stockReportOpen && _stockReportHospitalId === hospitalId) renderStockReportPreview(data);
   } catch (e) {
     toast('保存失敗: ' + e.message);
   }
@@ -4054,12 +4094,13 @@ async function saveStockReportNeedleName(patientId, value) {
   needleName = String(needleName === undefined || needleName === null ? '' : needleName).trim();
   if (!needleName) { toast('針の名称を入力してください'); return; }
   try {
-    var hospitalId = document.getElementById('bulkHospitalId').value;
+    var hospitalId = _stockReportHospitalId;
     var res = await api('setPatientNeedleName', null, { patientId: patientId, needleName: needleName, returnStockReport: true, hospitalId: hospitalId });
     if (res && res.error) toast('保存失敗: ' + res.error);
     var data = res && res.stockReport ? res.stockReport : await api('getStockReport', { hospitalId: hospitalId });
     if (data && data.error) { toast('取得失敗: ' + data.error); return; }
-    renderStockReportPreview(data);
+    // 保存した病院の報告書を開いていれば描き直す（同じ病院で開き直していても、保存後の値を出す）。
+    if (_stockReportOpen && _stockReportHospitalId === hospitalId) renderStockReportPreview(data);
   } catch (e) {
     toast('保存失敗: ' + e.message);
   }
@@ -4344,10 +4385,15 @@ function closeStockPrint() {
 // 一括残数 過去の記録（日付グループ一覧）
 // ============================================================
 var _bulkHistoryGroups = []; // 読み込んだグループデータを保持
+var _bulkHistoryHospitalId = '';
+// 過去の記録を開くたびに進める。開き直した後に、前の回の読み込みの応答で描かないための札。
+var _bulkHistoryGen = 0;
 
 async function loadBulkLogHistory() {
-  var hospitalId = document.getElementById('bulkHospitalId').value;
+  var hospitalId = getSearchSelectValue('bulkHospitalSearchSelect');
   if (!hospitalId) { toast('先に病院を選択してください'); return; }
+  _bulkHistoryHospitalId = hospitalId;
+  var gen = ++_bulkHistoryGen;
 
   document.getElementById('bulkHistoryListContent').innerHTML =
     '<div class="loading"><div class="spinner"></div>読み込み中...</div>';
@@ -4355,9 +4401,11 @@ async function loadBulkLogHistory() {
 
   try {
     var groups = await api('getBulkLogHistory', { hospitalId: hospitalId });
+    if (gen !== _bulkHistoryGen) return;
     _bulkHistoryGroups = groups;
     renderBulkHistoryList(groups);
   } catch(e) {
+    if (gen !== _bulkHistoryGen) return;
     document.getElementById('bulkHistoryListContent').innerHTML =
       '<div style="color:red;padding:16px">エラー: ' + escHtml(e.message) + '</div>';
   }
@@ -4477,6 +4525,7 @@ async function saveBulkHistEdit(logId, prescriptionId, capacity, date, groupIdx)
   var bottles = parseFloat(inp.value);
   if (isNaN(bottles) || bottles < 0) { toast('本数を正しく入力してください'); return; }
   var stockUnits = bottles * capacity;
+  var histHospitalId = _bulkHistoryHospitalId;
 
   try {
     // ログの在庫数を更新（GAS側で処方マスタも同時更新）
@@ -4484,7 +4533,7 @@ async function saveBulkHistEdit(logId, prescriptionId, capacity, date, groupIdx)
     invalidateAlertCache(); // 在庫変更のためアラートを再取得
     toast('✓ 保存しました');
     // グループを再読み込みして詳細を更新
-    await refreshBulkHistoryDetail(groupIdx);
+    await refreshBulkHistoryDetail(groupIdx, histHospitalId);
   } catch(e) {
     toast('エラー: ' + e.message);
   }
@@ -4492,43 +4541,50 @@ async function saveBulkHistEdit(logId, prescriptionId, capacity, date, groupIdx)
 
 async function deleteBulkHistLog(logId, groupIdx) {
   if (!confirm('この記録を削除しますか？')) return;
+  var histHospitalId = _bulkHistoryHospitalId;
   try {
     await api('deleteLog', null, { logId: logId });
     toast('✓ 削除しました');
-    await refreshBulkHistoryDetail(groupIdx);
+    await refreshBulkHistoryDetail(groupIdx, histHospitalId);
   } catch(e) {
     toast('エラー: ' + e.message);
   }
 }
 
-async function refreshBulkHistoryDetail(groupIdx) {
-  var hospitalId = document.getElementById('bulkHospitalId').value;
+async function refreshBulkHistoryDetail(groupIdx, histHospitalId) {
+  var hospitalId = _bulkHistoryHospitalId;
+  if (histHospitalId === undefined) histHospitalId = hospitalId;
   if (!hospitalId) return;
   // 履歴と在庫一覧は互いに独立なので同時に取りに行く。順番に待つと、
   // 保存直後の再読み込みでサーバ往復が2回積み上がる。
   // 在庫側(getBulkStockData)は全処方のログを日付順にリプレイするため重く、
   // 直列だと履歴の待ち時間がそのまま上乗せされていた。
-  var needStock = !!window._bulkPatients;
+  // 一覧を取り直すのは、最後に読み込みを始めた一覧の病院（refreshBulkStockIfOpen と同じ）
+  var stockHospitalId = _bulkStockRequestedHospitalId;
+  var loadVersion = _bulkStockLoadVersion;
   var stockP = null;
-  if (needStock) {
+  if (stockHospitalId && window._bulkPatients) {
     // 履歴側が失敗したときに在庫側の失敗が未処理のまま残らないよう、
     // ここで包んで結果を持ち帰る（成否を区別するため素の値では返さない）。
-    stockP = api('getBulkStockData', { hospitalId: hospitalId })
+    stockP = api('getBulkStockData', { hospitalId: stockHospitalId })
       .then(function (v) { return { ok: true, value: v }; })
       .catch(function (e) { return { ok: false, error: e }; });
   }
 
   try {
-    var groups = await api('getBulkLogHistory', { hospitalId: hospitalId });
-    _bulkHistoryGroups = groups;
-    // 同じインデックスのグループが残っていれば再描画
-    var g = groups[groupIdx];
-    if (g) {
-      renderBulkHistoryDetail(g, groupIdx);
-    } else {
-      closeModal('bulkHistoryDetailModal');
-      openModal('bulkHistoryListModal');
-      renderBulkHistoryList(groups);
+    // 保存・削除の後に別の病院の記録を開き直していたら、履歴は取り直さない（行番号が別の病院のものになるため）。
+    var groups = histHospitalId === hospitalId ? await api('getBulkLogHistory', { hospitalId: hospitalId }) : null;
+    if (groups && _bulkHistoryHospitalId === hospitalId) {
+      _bulkHistoryGroups = groups;
+      // 同じインデックスのグループが残っていれば再描画
+      var g = groups[groupIdx];
+      if (g) {
+        renderBulkHistoryDetail(g, groupIdx);
+      } else {
+        closeModal('bulkHistoryDetailModal');
+        openModal('bulkHistoryListModal');
+        renderBulkHistoryList(groups);
+      }
     }
   } catch(e) { console.warn(e); }
 
@@ -4544,8 +4600,9 @@ async function refreshBulkHistoryDetail(groupIdx) {
       var stock = await stockP;
       if (!stock.ok) {
         console.warn('一括在庫の再取得に失敗:', stock.error && stock.error.message);
-      } else if (window._bulkPatients) {
+      } else if (loadVersion === _bulkStockLoadVersion && window._bulkPatients) {
         renderBulkStockList(stock.value);
+        setBulkStockHospital(stockHospitalId);
       }
     } catch(e) { console.warn(e); }
   }
@@ -4553,6 +4610,8 @@ async function refreshBulkHistoryDetail(groupIdx) {
 
 async function submitBulkStock() {
   if (!window._bulkPatients || !window._bulkPatients.length) { toast('データがありません'); return; }
+  var stockVersion = _bulkStockLoadVersion;
+  var submitHospitalId = _bulkStockHospitalId;
   // 保存開始時の写真世代を固定する（記録モーダルと同じ競合対策）。
   var up = bulkPhotoUpload;
 
@@ -4611,12 +4670,18 @@ async function submitBulkStock() {
     var ng = result.results ? result.results.filter(function(r){ return !r.success; }).length : 0;
     toast('✓ ' + ok + '件登録完了' + (ng ? ' / ' + ng + '件失敗' : ''));
     if (photoFailed) toast('写真の保存に失敗しました（記録は保存しました）');
-    // リセット
-    document.getElementById('bulkStockList').innerHTML = '';
-    document.getElementById('bulkPhotoSection').style.display = 'none';
-    document.getElementById('bulkSubmitSection').style.display = 'none';
-    clearBulkPhoto({ stopPropagation: function(){} });
-    window._bulkPatients = null;
+    // リセット（確定の途中で別の病院の一覧を読み込み始めていたら、その一覧と、その後に添えた写真は消さない。
+    // 同じ病院を読み込み直していたら、確定前の在庫を出したままにしないよう今までどおり消す）
+    var keepNewerList = stockVersion !== _bulkStockLoadVersion && _bulkStockRequestedHospitalId !== submitHospitalId;
+    if (!keepNewerList || bulkPhotoUpload === up) clearBulkPhoto({ stopPropagation: function(){} });
+    if (!keepNewerList) {
+      _bulkStockHospitalId = '';
+      document.getElementById('bulkStockHospitalLabel').innerHTML = '';
+      document.getElementById('bulkStockList').innerHTML = '';
+      document.getElementById('bulkPhotoSection').style.display = 'none';
+      document.getElementById('bulkSubmitSection').style.display = 'none';
+      window._bulkPatients = null;
+    }
   } catch(e) {
     // 通信失敗時は結果不明なので予約のまま残す（写真の誤削除を避ける）。
     if (up && e && e.noRetry) {
