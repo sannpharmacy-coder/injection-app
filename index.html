@@ -2054,6 +2054,7 @@ async function _apiRequest(action, params, body, meta) {
     } catch (_) {}
     var movedError = new Error(data.error || '切り替え作業中です…');
     movedError.noRetry = true;
+    movedError.notWritten = true;
     if (gasUrlSwitched) movedError.message = '切り替え作業中です…';
     else if (destination) {
       movedGasUrl = destination;
@@ -2071,17 +2072,20 @@ async function _apiRequest(action, params, body, meta) {
     var errAuth = new Error('PINが正しくありません。再入力してください。');
     errAuth.noRetry = true;     // PINが違う限り再試行しても必ず同じ結果になる
     errAuth.isAuthError = true; // 呼び出し元(initApp等)が個別フォールバックを止めるための判定に使う
+    errAuth.notWritten = true;
     throw errAuth;
   }
   if (data && data.error === 'locked') {
     var errLock = new Error('PINの誤入力が続いたため10分間ロックされています。時間をおいて再度お試しください。');
     errLock.noRetry = true;
     errLock.isLockError = true;
+    errLock.notWritten = true;
     throw errLock;
   }
   if (data && data.error) {
     var errBiz = new Error(data.error);
     errBiz.noRetry = true; // サーバーが返した業務エラーは再試行しても同じ結果になる
+    if (data.notWritten === true) errBiz.notWritten = true;
     throw errBiz;
   }
   return data;
@@ -3929,6 +3933,42 @@ var _stockReportHospitalId = '';
 // 報告書を開くたび・閉じるたびに進める。古い応答で描き直さないための札（病院 ID は閉じても消さない）。
 var _stockReportGen = 0;
 var _stockReportOpen = false;
+var _stockReportDataSeq = 0;
+var _stockReportSaveQueue = Promise.resolve();
+var _stockReportPendingSaves = new Map();
+
+function enqueueStockReportSave(hospitalId, save) {
+  var pending = _stockReportPendingSaves.get(hospitalId) || { count: 0 };
+  _stockReportPendingSaves.set(hospitalId, pending);
+  pending.count++;
+  var saved = _stockReportSaveQueue.then(save).finally(function() {
+    if (--pending.count === 0) _stockReportPendingSaves.delete(hospitalId);
+  });
+  _stockReportSaveQueue = saved.catch(function() {});
+  pending.tail = _stockReportSaveQueue;
+  return saved;
+}
+
+function renderSavedStockReport(hospitalId, data) {
+  if (_stockReportOpen && _stockReportHospitalId === hospitalId) {
+    renderStockReportPreview(data);
+    ++_stockReportDataSeq;
+  }
+}
+
+function fillStockReportDates(plans) {
+  var checkInp = document.getElementById('stockReportCheckDate');
+  var visitInp = document.getElementById('stockReportVisitDate');
+  var bulkDateVal = document.getElementById('bulkDate').value;
+  if (checkInp) checkInp.value = bulkDateVal || todayStr();
+  if (visitInp) {
+    // getVisitPlans は visitDate 降順で返すため先頭が最新
+    var latest = (plans && plans.length) ? plans[0] : null;
+    var today = todayStr().replace(/-/g, '/');
+    visitInp.value = (latest && latest.nextVisitDate && latest.nextVisitDate >= today)
+      ? latest.nextVisitDate.replace(/\//g, '-') : '';
+  }
+}
 
 async function openStockReport() {
   var hospitalId = getSearchSelectValue('bulkHospitalSearchSelect');
@@ -3942,6 +3982,7 @@ async function openStockReport() {
     : '';
   _stockReportOpen = true;
   var gen = ++_stockReportGen;
+  var dataSeq = _stockReportDataSeq;
   document.getElementById('stockReportSection').style.display = '';
   document.getElementById('bulkStockHospitalLabel').style.display = 'none';
   document.getElementById('bulkStockList').style.display = 'none';
@@ -3953,26 +3994,34 @@ async function openStockReport() {
       api('getStockReport', { hospitalId: hospitalId }),
       api('getVisitPlans', { hospitalId: hospitalId }),
     ]);
-    if (gen !== _stockReportGen) return;
-    var data  = results[0];
-    var plans = results[1];
-    if (data && data.error) { toast('取得失敗: ' + data.error); closeStockReport(); return; }
-
-    var checkInp = document.getElementById('stockReportCheckDate');
-    var visitInp = document.getElementById('stockReportVisitDate');
-    var bulkDateVal = document.getElementById('bulkDate').value;
-    if (checkInp) checkInp.value = bulkDateVal || todayStr();
-    if (visitInp) {
-      // getVisitPlans は visitDate 降順で返すため先頭が最新
-      var latest = (plans && plans.length) ? plans[0] : null;
-      var today = todayStr().replace(/-/g, '/');
-      visitInp.value = (latest && latest.nextVisitDate && latest.nextVisitDate >= today)
-        ? latest.nextVisitDate.replace(/\//g, '-') : '';
-    }
-    renderStockReportPreview(data);
+    finishLoad(results[0], results[1]);
   } catch (e) {
+    finishLoad(null, null, e);
+  }
+
+  function finishLoad(data, plans, error) {
     if (gen !== _stockReportGen) return;
-    document.getElementById('stockReportPatients').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
+    var pending = _stockReportPendingSaves.get(hospitalId);
+    if (pending) {
+      // 取得の完了後も、同じ病院の保存が終わるまで応答を保持する。
+      pending.tail.then(function() { finishLoad(data, plans, error); });
+      return;
+    }
+    var savedSinceLoad = dataSeq !== _stockReportDataSeq;
+    try {
+      if (error) throw error;
+      fillStockReportDates(plans);
+      // _apiRequest はサーバーの { error } を例外に変えるので、今はこの分岐を通らない（catch で扱う）
+      if (data && data.error) {
+        toast('取得失敗: ' + data.error);
+        if (!savedSinceLoad) closeStockReport();
+      } else if (!savedSinceLoad) {
+        renderStockReportPreview(data);
+      }
+    } catch (e) {
+      if (savedSinceLoad) toast('エラー: ' + e.message);
+      else document.getElementById('stockReportPatients').innerHTML = '<div class="card" style="color:red">エラー: ' + escHtml(e.message) + '</div>';
+    }
   }
 }
 
@@ -4067,19 +4116,20 @@ async function onStockReportOverrideChange(prescriptionId) {
     if (!Number.isInteger(n) || n < 0) { toast('定数は0以上の整数で入力してください'); return; }
     body.fixedStockCount = n;
   }
-  try {
-    var hospitalId = _stockReportHospitalId;
-    body.returnStockReport = true;
-    body.hospitalId = hospitalId;
-    var res = await api('updatePrescription', null, body);
-    if (res && res.error) { toast('保存失敗: ' + res.error); return; }
-    var data = res && res.stockReport ? res.stockReport : await api('getStockReport', { hospitalId: hospitalId });
-    if (data && data.error) { toast('取得失敗: ' + data.error); return; }
-    // 保存した病院の報告書を開いていれば描き直す（同じ病院で開き直していても、保存後の値を出す）。
-    if (_stockReportOpen && _stockReportHospitalId === hospitalId) renderStockReportPreview(data);
-  } catch (e) {
-    toast('保存失敗: ' + e.message);
-  }
+  var hospitalId = _stockReportHospitalId;
+  body.returnStockReport = true;
+  body.hospitalId = hospitalId;
+  return enqueueStockReportSave(hospitalId, async function() {
+    try {
+      var res = await api('updatePrescription', null, body);
+      if (res && res.error) { toast('保存失敗: ' + res.error); return; }
+      var data = res && res.stockReport ? res.stockReport : await api('getStockReport', { hospitalId: hospitalId });
+      if (data && data.error) { toast('取得失敗: ' + data.error); return; }
+      renderSavedStockReport(hospitalId, data);
+    } catch (e) {
+      toast('保存失敗: ' + e.message);
+    }
+  });
 }
 
 // 針の<select>変更: 「＋ 新しい種類を追加」なら入力欄を出すだけ、それ以外は即保存
@@ -4105,17 +4155,18 @@ async function saveStockReportNeedleName(patientId, value) {
   }
   needleName = String(needleName === undefined || needleName === null ? '' : needleName).trim();
   if (!needleName) { toast('針の名称を入力してください'); return; }
-  try {
-    var hospitalId = _stockReportHospitalId;
-    var res = await api('setPatientNeedleName', null, { patientId: patientId, needleName: needleName, returnStockReport: true, hospitalId: hospitalId });
-    if (res && res.error) toast('保存失敗: ' + res.error);
-    var data = res && res.stockReport ? res.stockReport : await api('getStockReport', { hospitalId: hospitalId });
-    if (data && data.error) { toast('取得失敗: ' + data.error); return; }
-    // 保存した病院の報告書を開いていれば描き直す（同じ病院で開き直していても、保存後の値を出す）。
-    if (_stockReportOpen && _stockReportHospitalId === hospitalId) renderStockReportPreview(data);
-  } catch (e) {
-    toast('保存失敗: ' + e.message);
-  }
+  var hospitalId = _stockReportHospitalId;
+  return enqueueStockReportSave(hospitalId, async function() {
+    try {
+      var res = await api('setPatientNeedleName', null, { patientId: patientId, needleName: needleName, returnStockReport: true, hospitalId: hospitalId });
+      if (res && res.error) toast('保存失敗: ' + res.error);
+      var data = res && res.stockReport ? res.stockReport : await api('getStockReport', { hospitalId: hospitalId });
+      if (data && data.error) { toast('取得失敗: ' + data.error); return; }
+      renderSavedStockReport(hospitalId, data);
+    } catch (e) {
+      toast('保存失敗: ' + e.message);
+    }
+  });
 }
 
 // さん薬局の基本情報（印刷用・固定値）
@@ -4625,7 +4676,84 @@ async function refreshBulkHistoryDetail(groupIdx, histHospitalId) {
   }
 }
 
+var bulkStockSubmission = null;
+var visitReceiptSubmission = null;
+var visitReceiptSubmitting = false;
+var bulkSendRecordReady;
+
+function bulkUnknownMessage() {
+  return bulkSendRecordReady === true
+    ? '届いたか確かめられませんでした。同じ内容のままもう一度押せば、届いていても二重には登録しません'
+    : '届いたか確かめられませんでした。履歴を確かめてから送り直してください';
+}
+
+function bulkRequestId(previous, key) {
+  if (previous && previous.key === key) return previous.requestId;
+  if (previous && (previous.state === 'unknown' || previous.uncertain) &&
+      !confirm('前の送信は届いたか分かりません。届いていた場合、変えていない行は二重になります。履歴を確かめた上で、このまま送りますか？')) return null;
+  var crypto = window.crypto;
+  if (crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  if (crypto && typeof crypto.getRandomValues === 'function') {
+    return Array.from(crypto.getRandomValues(new Uint8Array(16)), function(byte) {
+      return byte.toString(16).padStart(2, '0');
+    }).join('');
+  }
+  return Date.now().toString(36) + '-' + Math.random().toString(36).slice(2);
+}
+
+function bulkSubmissionKey(context, rows, fields) {
+  var entries = rows.map(function(row) {
+    return [row.prescriptionId].concat(fields.map(function(field) { return row[field]; }));
+  });
+  entries.sort(function(a, b) { return String(a[0]).localeCompare(String(b[0])); });
+  return JSON.stringify([context, entries]);
+}
+
+function startBulkSubmission(previous, key, requestId) {
+  var uncertain = !!(previous && previous.requestId === requestId &&
+    (previous.uncertain || previous.state === 'unknown'));
+  return { key: key, requestId: requestId, state: 'unknown', uncertain: uncertain };
+}
+
+function finishBulkSubmission(submission, result) {
+  if (!result || !Array.isArray(result.results)) throw new Error('登録結果を確認できませんでした');
+  submission.state = 'done';
+  submission.uncertain = false;
+}
+
+function failBulkSubmission(submission, error) {
+  if (!submission) return;
+  // サーバーが返したエラーは送信記録を使えたかを示さないので、前の応答の値を使わない
+  if (error && error.noRetry) bulkSendRecordReady = undefined;
+  if (error && error.notWritten) submission.state = 'notWritten';
+  else if (submission.state === 'unknown') submission.uncertain = true;
+}
+
+function bulkMedicineNames(patients, includePatient) {
+  var names = Object.create(null);
+  patients.forEach(function(pt) {
+    (pt.prescriptions || []).forEach(function(rx) {
+      if (rx.medicineName) {
+        names[rx.prescriptionId] = (includePatient && pt.patientName ? pt.patientName + ' ' : '') + rx.medicineName;
+      }
+    });
+  });
+  return names;
+}
+
+function bulkFailureText(result, names) {
+  var missing = new Set(result.notRecorded || []);
+  (result.results || []).forEach(function(row) {
+    if (row.success === false && row.prescriptionId != null) missing.add(row.prescriptionId);
+  });
+  return missing.size ? '　記録できなかった: ' + Array.from(missing, function(id) {
+    return names[id] || id;   // toast は textContent で入れるのでエスケープしない
+  }).join('、') : '';
+}
+
 async function submitBulkStock() {
+  var bulkBtn = document.getElementById('bulkStockSubmitBtn');
+  if (bulkBtn && bulkBtn.disabled) return;
   if (!window._bulkPatients || !window._bulkPatients.length) { toast('データがありません'); return; }
   var stockVersion = _bulkStockLoadVersion;
   var submitHospitalId = _bulkStockHospitalId;
@@ -4660,13 +4788,17 @@ async function submitBulkStock() {
 
   // 確認
   if (!confirm(logs.length + '件の残数確認を登録します。よろしいですか？')) return;
+  var key = bulkSubmissionKey([submitHospitalId, date, memo], logs, ['stockBottles', 'stockUnits']);
+  var requestId = bulkRequestId(bulkStockSubmission, key);
+  if (!requestId) return;
+  var medicineNames = bulkMedicineNames(window._bulkPatients, false);
 
   // 二重送信ガード: 応答が遅いときの再クリックで同じ残数確認が重複登録されるのを防ぐ
-  var bulkBtn = document.getElementById('bulkStockSubmitBtn');
   if (bulkBtn) { bulkBtn.disabled = true; bulkBtn.textContent = '登録中...'; }
 
   // 写真アップロードと一括登録を1つのtryで囲む（間で例外が出ても進捗バーが必ず閉じるように）
   var pg = progressStart(logs.length + '件を登録しています…');
+  var submission;
   try {
     // 写真は選択時に送信済み。未完了なら待ち、失敗時だけ1回再送する。
     var photoUrl = '';
@@ -4680,12 +4812,15 @@ async function submitBulkStock() {
     }
 
     // 一括登録
-    var result = await api('addBulkLogs', null, { logs: logs, photoUrl: photoUrl });
+    submission = bulkStockSubmission = startBulkSubmission(bulkStockSubmission, key, requestId);
+    var result = await api('addBulkLogs', null, { logs: logs, photoUrl: photoUrl, requestId: requestId });
+    bulkSendRecordReady = result && result.sendRecordReady;
+    finishBulkSubmission(submission, result);
     if (up) up.used = true;
     invalidateAlertCache(); // 在庫変更のためアラートを再取得
-    var ok = result.results ? result.results.filter(function(r){ return r.success; }).length : 0;
-    var ng = result.results ? result.results.filter(function(r){ return !r.success; }).length : 0;
-    toast('✓ ' + ok + '件登録完了' + (ng ? ' / ' + ng + '件失敗' : ''));
+    var ok = result.results.filter(function(r){ return r.success; }).length;
+    var ng = result.results.length - ok;
+    toast('✓ ' + ok + '件登録完了' + (ng ? ' / ' + ng + '件失敗' : '') + bulkFailureText(result, medicineNames));
     if (photoFailed) toast('写真の保存に失敗しました（記録は保存しました）');
     // リセット（確定の途中で別の病院の一覧を読み込み始めていたら、その一覧と、その後に添えた写真は消さない。
     // 同じ病院を読み込み直していたら、確定前の在庫を出したままにしないよう今までどおり消す）
@@ -4701,12 +4836,15 @@ async function submitBulkStock() {
     }
   } catch(e) {
     // 通信失敗時は結果不明なので予約のまま残す（写真の誤削除を避ける）。
-    if (up && e && e.noRetry) {
+    failBulkSubmission(submission, e);
+    // 写真を付けた送信が届いたか分からずに終わったら、その写真は記録が使っているかもしれないので、以後は消さない
+    if (up && photoUrl && submission && submission.state === 'unknown') up.maybeUsed = true;
+    if (up && e && e.notWritten && !up.maybeUsed) {
       up.reserved = false;
       if (up !== bulkPhotoUpload) discardPhotoUpload(up);
     }
     progressFail(pg);
-    toast('エラー: ' + e.message);
+    toast('エラー: ' + e.message + (submission && submission.state === 'unknown' ? '　' + bulkUnknownMessage() : ''));
   } finally {
     progressEnd(pg);
     if (bulkBtn) { bulkBtn.disabled = false; bulkBtn.textContent = '✓ 残数を一括確定'; }
@@ -5218,9 +5356,10 @@ function applyVisitBottleEdits() {
 // 一括登録（処方受取ログ）
 // ============================================================
 async function visitBulkRegister() {
-  if (!lastVisitResult) return;
+  if (!lastVisitResult || visitReceiptSubmitting) return;
   var r = lastVisitResult;
   var btn = document.getElementById('visitBulkRegisterBtn');
+  if (btn && btn.disabled) return;
   if (btn) {
     btn.disabled = true; btn.textContent = '登録中...';
   }
@@ -5245,25 +5384,34 @@ async function visitBulkRegister() {
     return;
   }
 
+  var key = bulkSubmissionKey([r.hospitalId, visitDate], tasks, ['bottles']);
+  var requestId = bulkRequestId(visitReceiptSubmission, key);
+  if (!requestId) {
+    toast('一括登録を取りやめました（0件登録）');
+    if (btn) {
+      btn.disabled = false; btn.textContent = '📋 一括登録';
+    }
+    return;
+  }
   var pg = progressStart(tasks.length + '件を登録しています…');
+  visitReceiptSubmitting = true;
+  var submission;
   try {
+    var medicineNames = bulkMedicineNames(r.patients, true);
     // 1回のまとめ送信（サーバー側1実行・1ロックで全件処理）。
     // 以前は addLog をN件並列送信していたが、LockServiceで直列化され遅かった。
     var body = {
       receipts: tasks.map(function(t) {
         return { prescriptionId: t.prescriptionId, bottles: t.bottles, date: t.date };
       }),
-      memo: '往診一括登録'
+      memo: '往診一括登録',
+      requestId: requestId
     };
+    submission = visitReceiptSubmission = startBulkSubmission(visitReceiptSubmission, key, requestId);
     var result = await api('addBulkReceipts', null, body);
+    bulkSendRecordReady = result && result.sendRecordReady;
     if (result && result.needsConfirm === 'recent_receipt') {
-      var medicineNames = {};
-      r.patients.forEach(function(pt) {
-        (pt.prescriptions || []).forEach(function(m) {
-          // 同じ施設で複数の患者が同じ薬を使うため、患者名も添えて区別する
-          medicineNames[m.prescriptionId] = (pt.patientName ? pt.patientName + ' ' : '') + m.medicineName;
-        });
-      });
+      submission.state = 'notWritten';
       var duplicateLines = (result.duplicates || []).map(function(d) {
         return (medicineNames[d.prescriptionId] || d.prescriptionId) + '\n'
           + recentReceiptLines(d.recentReceipts);
@@ -5274,16 +5422,21 @@ async function visitBulkRegister() {
         return;
       }
       body.allowRecentReceipt = true;
+      submission.state = 'unknown';
       result = await api('addBulkReceipts', null, body);
+      bulkSendRecordReady = result && result.sendRecordReady;
     }
-    var resArr = (result && result.results) ? result.results : [];
+    finishBulkSubmission(submission, result);
+    var resArr = result.results;
     var ok = resArr.filter(function(r) { return r.success; }).length;
-    var ng = ((result && result.total) || resArr.length) - ok;
-    toast('✓ ' + ok + '件登録完了' + (ng > 0 ? '　失敗: ' + ng + '件' : ''));
+    var ng = (result.total || resArr.length) - ok;
+    toast('✓ ' + ok + '件登録完了' + (ng > 0 ? '　失敗: ' + ng + '件' : '') + bulkFailureText(result, medicineNames));
   } catch(e) {
+    failBulkSubmission(submission, e);
     progressFail(pg);
-    toast('エラー: ' + escHtml(e.message));
+    toast('エラー: ' + e.message + (submission && submission.state === 'unknown' ? '　' + bulkUnknownMessage() : ''));
   } finally {
+    visitReceiptSubmitting = false;
     progressEnd(pg);
     if (btn) {
       btn.disabled = false; btn.textContent = '📋 一括登録';
